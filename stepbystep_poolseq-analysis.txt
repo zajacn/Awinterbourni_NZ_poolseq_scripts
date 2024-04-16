@@ -1,0 +1,1106 @@
+Poolseq scripts - create a scratch directory poolseq_analysis and cd into it, REMEMBER EXCLUDE MAPOURIKA POOL1 from the analysis
+scr_quota -h
+1. BWA mapping, sam2bam conversion, sorting and first mapping report
+
+#!/bin/bash
+#BSUB -J "BWA_1[1-18]%5"
+#BSUB -R "rusage[mem=10000]"
+#BSUB -n 12
+#BSUB -W 24:00
+#BSUB -R "rusage[scratch=10000]"
+
+
+#####Definition of the paths
+data="/cluster/work/gdc/people/zajacn/poolseq_joined"
+Ref="/cluster/work/gdc/shared/p402/agouti/red3/red3.agouti.run1.fasta"
+out="./mapping"
+
+##Number_processors per Job
+proc=24
+mem=80GB
+
+##Mapping Quality
+Qual=20
+
+module load gdc gcc/4.8.2 bwa/0.7.17 java/1.8.0_101 python/3.6.1 bedtools/2.28.0 sambamba/0.6.8 picard-tools/2.20.2
+
+export OMP_NUM_THREADS=8
+
+if [ ! -e ${out} ]  ; then mkdir ${out} ; fi
+if [ ! -e ${out}/stats ]  ; then mkdir ${out}/stats ; fi
+if [ ! -e ${out}/statsQ${Qual} ]  ; then mkdir ${out}/statsQ${Qual} ; fi
+if [ ! -e ${out}/stats_dup ]  ; then mkdir ${out}/stats_dup ; fi
+if [ ! -e  ${Ref}.sa ]  ; then bwa index ${Ref} ; fi
+
+IDX=$LSB_JOBINDEX
+name=`sed -n ${IDX}p <samples`
+
+
+###map paired-end read using default parameters
+bwa mem ${Ref} ${data}/${name}_R1.fastq.gz ${data}/${name}_R2.fastq.gz -R "@RG\tID:${name}\tSM:${name}\tPL:Illumina" -t ${proc} > ${TMPDIR}/${name}.sam
+
+####convert sam to bam and sort it
+sambamba view -t ${proc} -S ${TMPDIR}/${name}.sam -f bam -l 0 -o ${TMPDIR}/${name}.bam
+
+sambamba sort ${TMPDIR}/${name}.bam -o ${out}/${name}_sort.bam -t ${proc} -m ${mem} --tmpdir ${TMPDIR}
+
+####mapping statistics
+sambamba flagstat ${out}/${name}_sort.bam > ${out}/stats/${name}
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------
+2. Remove low quality mappings, fix mate paired infos and  remove duplicates
+
+#!/bin/bash
+#BSUB -J "BWA_2[1-18]%5"
+#BSUB -R "rusage[mem=25000]"
+#BSUB -n 4
+#BSUB -W 24:00
+#BSUB -R "rusage[scratch=10000]"
+
+
+#####Definition of the paths
+out="./mapping"
+
+##Number_processors per Job
+proc=8
+mem=80GB
+
+##Mapping Quality
+Qual=20
+
+module load gdc gcc/4.8.2 bwa/0.7.17 java/1.8.0_101 python/3.6.1 bedtools/2.28.0 sambamba/0.6.8 picard-tools/2.20.2
+
+export OMP_NUM_THREADS=8
+
+IDX=$LSB_JOBINDEX
+name=`sed -n ${IDX}p <samples`
+
+####remove low quality reads
+sambamba view  -F "mapping_quality >= "${Qual} ${out}/${name}_sort.bam -o ${TMPDIR}/${name}_sort_${Qual}.bam -t ${proc} -f bam
+
+####FixMateInformation
+picard FixMateInformation I=${TMPDIR}/${name}_sort_${Qual}.bam O=${TMPDIR}/${name}_sort_${Qual}_fix.bam
+
+####Remove PCR duplicates
+picard MarkDuplicates TMP_DIR=${TMPDIR} INPUT=${TMPDIR}/${name}_sort_${Qual}_fix.bam OUTPUT=${out}/${name}_sort_Q${Qual}_fix_nodup.bam METRICS_FILE=${out}/stats_dup/${name} VALIDATION_STRINGENCY=LENIENT MAX_FILE_HANDLES_FOR_READ_ENDS_MAP=1024 REMOVE_DUPLICATES=true
+
+sambamba index ${out}/${name}_sort_Q${Qual}_fix_nodup.bam
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+3. Statistics with the filtered mappings  
+#!/bin/bash
+#BSUB -J "BWA_3[1-18]%10"
+#BSUB -R "rusage[mem=10000]"
+#BSUB -n 1
+#BSUB -W 4:00
+#BSUB -R "rusage[scratch=10000]"
+
+
+#####Definition of the paths
+out="./mapping"
+
+
+##Mapping Quality
+Qual=20
+
+module load gdc gcc/4.8.2 bwa/0.7.17 java/1.8.0_101 python/3.6.1 bedtools/2.28.0 sambamba/0.6.8 picard-tools/2.20.2
+
+export OMP_NUM_THREADS=8
+
+IDX=$LSB_JOBINDEX
+name=`sed -n ${IDX}p <samples`
+
+
+#Mapping statistics
+sambamba flagstat ${out}/${name}_sort_Q${Qual}_fix_nodup.bam > ${out}/statsQ${Qual}/${name}
+
+bedtools genomecov -ibam ${out}/${name}_sort_Q${Qual}_fix_nodup.bam -d > ${out}/statsQ${Qual}/${name}_cov
+
+gzip ${out}/statsQ${Qual}/${name}_cov
+
+Move the statistics and all the bam files into /cluster/work/gdc/people/zajacn/poolseq_mapping/.
+--------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+4. Create BED postion table from red3.contigs.fa.ann
+ 
+Run bwa index red3.agouti.run1.fasta (it should have already been done by point1)
+From the .ann file 
+less /cluster/work/gdc/shared/p402/agouti/red3/red3.agouti.run1.fasta.ann | sed 1d | awk '{print $3"\t"$2}' | sed 's/(null)\t//g' | awk '{printf "%s%s",$0,NR%2?"\t":RS}' > red3.agouti.run1.fasta.bed
+
+(jcf7180000248782        0       13649
+jcf7180000248780        0       15329
+jcf7180000248788        0       22877
+jcf7180000248789        0       7620
+jcf7180000243408        0       19137
+jcf7180000243409        0       29241
+jcf7180000243406        0       15493
+jcf7180000243407        0       11179)
+
+###split the file into 60 equal fragments (452 lines each)
+
+split -l 436 red3.agouti.run1.fasta.bed
+
+###Then collect all the scaffold file names into 1 list
+
+ls scaffold_set_* > list_of_scaffold_files
+
+move them to /cluster/work/gdc/people/zajacn/poolseq_mapping/results/
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+### Create the mpileup files - first 10 files with larger memory, the rest with smaller memory, 
+
+mkdir mpileup
+
+#!/bin/bash
+#BSUB -J "mpileup[1-10]%10"
+#BSUB -R "rusage[mem=100000]" 
+#BSUB -n 1
+#BSUB -W 24:00
+
+data="/cluster/work/gdc/people/zajacn/poolseq_mapping"
+Ref="/cluster/work/gdc/shared/p402/agouti/red3/red3.agouti.run1.fasta"
+path_out="/cluster/scratch/zajacn/poolseq_analysis/mpileup"
+ 
+IDX=$LSB_JOBINDEX
+name=`sed -n ${IDX}p < /cluster/work/gdc/people/zajacn/poolseq_mapping/results/list_of_scaffold_files`
+ 
+#generate mpileup ignoring read groups
+samtools mpileup -R -A -d 100000 -f ${Ref} -l ${name}  -b ${data}/bam.list -o ${path_out}/${name}_all_pops.mpileup > ${name}_out.file 2> ${name}_error.file
+
+with bam.list being:
+/201908.A.B_Alex_CAMP2ndWP_sort_Q20_fix_nodup.bam \
+/201908.A.B_Alex_ME_sort_Q20_fix_nodup.bam \
+/201908.A.B_Alex_MW_sort_Q20_fix_nodup.bam \
+/201908.A.B_Alex_NE_sort_Q20_fix_nodup.bam \
+/201908.A.B_Alex_NW_sort_Q20_fix_nodup.bam \
+/201908.A.B_Alex_SE_sort_Q20_fix_nodup.bam \
+/201908.A.B_Mapourika_Mix_Pool2_sort_Q20_fix_nodup.bam \
+/201908.A.B_Mapourika_Otto_Pool3_sort_Q20_fix_nodup.bam \
+/201908.A.B_Middleton_Pool1_sort_Q20_fix_nodup.bam \
+/201908.A.B_Middleton_Pool2_sort_Q20_fix_nodup.bam \
+/201908.A.B_Middleton_Pool3_sort_Q20_fix_nodup.bam \
+/201908.A.B_Paringa_Pool1_sort_Q20_fix_nodup.bam \
+/201908.A.B_Paringa_Pool2_sort_Q20_fix_nodup.bam \
+/201908.A.B_Paringa_Pool3_sort_Q20_fix_nodup.bam \
+/201908.A.B_Paringa_Pool4_sort_Q20_fix_nodup.bam \
+/201908.A.B_Selfe_Pool1_sort_Q20_fix_nodup.bam \
+/201908.A.B_Selfe_Pool2_sort_Q20_fix_nodup.bam \
+/201908.A.B_Selfe_Pool3_sort_Q20_fix_nodup.bam \
+
+
+
+#!/bin/bash
+#BSUB -J "mpileup[11-60]%10"
+#BSUB -R "rusage[mem=40000]"
+#BSUB -n 1
+#BSUB -W 24:00
+
+data="/cluster/work/gdc/people/zajacn/poolseq_mapping"
+Ref="/cluster/work/gdc/shared/p402/agouti/red3/red3.agouti.run1.fasta"
+path_out="/cluster/scratch/zajacn/poolseq_analysis/mpileup"
+
+IDX=$LSB_JOBINDEX
+name=`sed -n ${IDX}p < /cluster/work/gdc/people/zajacn/poolseq_mapping/results/list_of_scaffold_files`
+
+#generate mpileup ignoring read groups
+samtools mpileup -R -A -d 100000 -f ${Ref} -l ${data}/results/${name} \
+${data}/201908.A.B_Alex_CAMP2ndWP_sort_Q20_fix_nodup.bam \
+${data}/201908.A.B_Alex_ME_sort_Q20_fix_nodup.bam \
+${data}/201908.A.B_Alex_MW_sort_Q20_fix_nodup.bam \
+${data}/201908.A.B_Alex_NE_sort_Q20_fix_nodup.bam \
+${data}/201908.A.B_Alex_NW_sort_Q20_fix_nodup.bam \
+${data}/201908.A.B_Alex_SE_sort_Q20_fix_nodup.bam \
+${data}/201908.A.B_Mapourika_Mix_Pool2_sort_Q20_fix_nodup.bam \
+${data}/201908.A.B_Mapourika_Otto_Pool3_sort_Q20_fix_nodup.bam \
+${data}/201908.A.B_Middleton_Pool1_sort_Q20_fix_nodup.bam \
+${data}/201908.A.B_Middleton_Pool2_sort_Q20_fix_nodup.bam \
+${data}/201908.A.B_Middleton_Pool3_sort_Q20_fix_nodup.bam \
+${data}/201908.A.B_Paringa_Pool1_sort_Q20_fix_nodup.bam \
+${data}/201908.A.B_Paringa_Pool2_sort_Q20_fix_nodup.bam \
+${data}/201908.A.B_Paringa_Pool3_sort_Q20_fix_nodup.bam \
+${data}/201908.A.B_Paringa_Pool4_sort_Q20_fix_nodup.bam \
+${data}/201908.A.B_Selfe_Pool1_sort_Q20_fix_nodup.bam \
+${data}/201908.A.B_Selfe_Pool2_sort_Q20_fix_nodup.bam \
+${data}/201908.A.B_Selfe_Pool3_sort_Q20_fix_nodup.bam \
+-o ${path_out}/${name}_all_pops.mpileup > ${name}_out.file 2> ${name}_error.file
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+### Then create a sync file for every mpileup file
+
+#!/bin/bash
+#BSUB -J "mpileup[1-60]%10"
+#BSUB -R "rusage[mem=2500]"
+#BSUB -n 4
+#BSUB -W 24:00
+
+data="/cluster/work/gdc/people/zajacn/poolseq_mapping"
+Ref="/cluster/work/gdc/shared/p402/agouti/red3/red3.agouti.run1.fasta"
+path_out="/cluster/scratch/zajacn/poolseq_analysis/mpileup"
+
+IDX=$LSB_JOBINDEX
+name=`sed -n ${IDX}p < /cluster/work/gdc/people/zajacn/poolseq_mapping/results/list_of_scaffold_files`
+
+java -ea -Xmx7g -jar /cluster/apps/gdc/popoolation2/1201/mpileup2sync.jar  --input ${path_out}/${name}_all_pops.mpileup --output  ${path_out}/${name}_all_pops.sync --fastq-type sanger --min-qual 20 --threads 4
+
+(list_of_scaffold_files: 
+scaffold_set_aa
+scaffold_set_ab
+scaffold_set_ac
+scaffold_set_ad
+scaffold_set_ae
+scaffold_set_af
+scaffold_set_ag
+scaffold_set_ah
+scaffold_set_ai
+scaffold_set_aj)
+
+Move all sync files into /cluster/work/gdc/people/zajacn/poolseq_mapping/results/
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+###Divide each mpileup into per pool pileup file
+
+awk '{print $1"\t"$2"\t"$3"\t"$4"\t"$5"\t"$6}' scaffold_set_au(correct scaffold set)_all_pops.mpileup > scaffold_set_au(correct scaffold set)_Alex_pop1.pileup
+awk '{print $1"\t"$2"\t"$3"\t"$7"\t"$8"\t"$9}' scaffold_set_au_all_pops.mpileup > scaffold_set_au_Alex_pop2.pileup
+awk '{print $1"\t"$2"\t"$3"\t"$10"\t"$11"\t"$12}' scaffold_set_au_all_pops.mpileup > scaffold_set_au_Alex_pop3.pileup
+awk '{print $1"\t"$2"\t"$3"\t"$13"\t"$14"\t"$15}' scaffold_set_au_all_pops.mpileup > scaffold_set_au_Alex_pop4.pileup
+awk '{print $1"\t"$2"\t"$3"\t"$16"\t"$17"\t"$18}' scaffold_set_au_all_pops.mpileup > scaffold_set_au_Alex_pop5.pileup
+awk '{print $1"\t"$2"\t"$3"\t"$19"\t"$20"\t"$21}' scaffold_set_au_all_pops.mpileup > scaffold_set_au_Alex_pop6.pileup
+awk '{print $1"\t"$2"\t"$3"\t"$25"\t"$26"\t"$27}' scaffold_set_au_all_pops.mpileup > scaffold_set_au_Map_pop2.pileup
+awk '{print $1"\t"$2"\t"$3"\t"$28"\t"$29"\t"$30}' scaffold_set_au_all_pops.mpileup > scaffold_set_au_Map_pop3.pileup
+awk '{print $1"\t"$2"\t"$3"\t"$31"\t"$32"\t"$33}' scaffold_set_au_all_pops.mpileup > scaffold_set_au_Mid_pop1.pileup
+awk '{print $1"\t"$2"\t"$3"\t"$34"\t"$35"\t"$36}' scaffold_set_au_all_pops.mpileup > scaffold_set_au_Mid_pop2.pileup
+awk '{print $1"\t"$2"\t"$3"\t"$37"\t"$38"\t"$39}' scaffold_set_au_all_pops.mpileup > scaffold_set_au_Mid_pop3.pileup
+awk '{print $1"\t"$2"\t"$3"\t"$40"\t"$41"\t"$42}' scaffold_set_au_all_pops.mpileup > scaffold_set_au_Paringa_pop1.pileup
+awk '{print $1"\t"$2"\t"$3"\t"$43"\t"$44"\t"$45}' scaffold_set_au_all_pops.mpileup > scaffold_set_au_Paringa_pop2.pileup
+awk '{print $1"\t"$2"\t"$3"\t"$46"\t"$47"\t"$48}' scaffold_set_au_all_pops.mpileup > scaffold_set_au_Paringa_pop3.pileup
+awk '{print $1"\t"$2"\t"$3"\t"$49"\t"$50"\t"$51}' scaffold_set_au_all_pops.mpileup > scaffold_set_au_Paringa_pop4.pileup
+awk '{print $1"\t"$2"\t"$3"\t"$52"\t"$53"\t"$54}' scaffold_set_au_all_pops.mpileup > scaffold_set_au_Selfe_pop1.pileup
+awk '{print $1"\t"$2"\t"$3"\t"$55"\t"$56"\t"$57}' scaffold_set_au_all_pops.mpileup > scaffold_set_au_Selfe_pop2.pileup
+awk '{print $1"\t"$2"\t"$3"\t"$58"\t"$59"\t"$60}' scaffold_set_au_all_pops.mpileup > scaffold_set_au_Selfe_pop3.pileup
+
+put it all in a script divide_mpileup.awk and run bsub -n1 -W 7:00 "sh divide_mpileup.awk"
+
+#####BETTER OPTION! or do a loop: for 18 samples where all the pool names are in the bam.list
+
+#!/bin/bash
+cat list_of_mpileups | while IFS= read -r line;
+do
+        sh split_mpileup.sh ${line}.mpileup
+done
+
+split_mpileup.sh:
+#!/bin/bash
+for i in $(seq 1 6)
+do
+name=$(sed -n ${i}p <bam.list)
+awk -v var1="$((${i}*3+1))" -v var2="$((${i}*3+2)))" -v var3="$((${i}*3+3)))" '{print $1, $2, $3, $var1, $var2, $var3}' ${name}_all_pops.mpileup >  ${pop_name}.mpileup
+done
+ 
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+###Calculate exonic variance (pi and theta) per pool using popoolation1
+1. Create a gtf file for exons from your gff file
+
+cat red3.agouti.run4.gff| awk '$3=="exon"'| perl -pe 's/ID=([^:;]+)([^;]+)?;.*/gene_id "$1"; transcript_id "$1:1";/'> exons.gtf
+or
+gt gff3_to_gtf red3.agouti.run4.gff  > exonsandCDS.gtf and then choose exons only with awk #better first option
+
+2. Run script
+#!/bin/bash
+#BSUB -J "variance[1-1080]%100"
+#BSUB -R "rusage[mem=5000]"
+#BSUB -n 1
+#BSUB -W 06:00
+
+
+IDX=$LSB_JOBINDEX
+name=`sed -n ${IDX}p < list_of_intervals`
+
+path_out="/cluster/scratch/zajacn/poolseq_analysis/mpileup_allpops"
+perl /cluster/apps/gdc/popoolation/1.2.2/Variance-at-position.pl --pool-size 48 --fastq-type Sanger --min-coverage 20 --min-count 6  --max-coverage 200  --pileup ${path_out}/${name}.pileup --gtf exons_red3.gtf --output ${path_out}/${name}_exonic_variance.theta/.pi --measure theta/pi
+
+(list_of_intervals:
+scaffold_set_au_Alex_pop1
+scaffold_set_au_Alex_pop2
+scaffold_set_au_Alex_pop3
+scaffold_set_au_Alex_pop4
+scaffold_set_au_Alex_pop5
+scaffold_set_au_Alex_pop6
+scaffold_set_au_Map_pop1
+scaffold_set_au_Map_pop2
+scaffold_set_au_Map_pop3
+scaffold_set_au_Mid_pop1
+scaffold_set_au_Mid_pop2
+scaffold_set_au_Mid_pop3
+scaffold_set_au_Paringa_pop1
+scaffold_set_au_Paringa_pop2
+scaffold_set_au_Paringa_pop3
+scaffold_set_au_Paringa_pop4
+scaffold_set_au_Selfe_pop1
+scaffold_set_au_Selfe_pop2
+scaffold_set_au_Selfe_pop3 etc.)
+
+3. This will create files with all 11503 genes and estimate variance per each gene using just exons and if the scaffold set used does not have these genes it will have a 0,0,na in a line
+so then you need find which file has the estimate variance for each gene, best to do it like so
+for ever file you look for :
+ awk '$2 != 0 || $3 != 0 || $4 != "na" {print}' *Alex_pop3_exonic_variance.theta/pi > Alex_pop3_exonic_variance.theta/pi
+
+4. To estimate how many genes you are expecting per scaffold set do:
+
+awk 'NR == FNR {x[$1] = 1; next} ($1 in x) {print $0}' /cluster/work/gdc/people/zajacn/poolseq_mapping/results/scaffold_set_xx number_of_genes_per_scaffold.csv > test_match
+awk '{ sum += $2; } END { print sum; }' test_match ##how many genes
+less test_match | wc -l ##how many scaffolds with genes
+
+when number_of_genes_per_scaffold.csv is
+scaff   numb
+agouti_scaf_100 1
+agouti_scaf_1001        1
+agouti_scaf_1002        2
+agouti_scaf_1003        2
+agouti_scaf_1004        1
+agouti_scaf_1005        2
+agouti_scaf_1007        3
+etc.
+
+
+###Actually:
+
+First you need to make a list of all scaffolds with genes within the set of scaffolds_agouti_xx set you are studying
+awk 'NR == FNR {x[$1] = 1; next} ($1 in x) {print $0}' scaffolds_aa_at (your set) number_of_genes_per_scaffold.txt > test.match
+
+you then make a file which in first column list scaffolds and then in second column lists genes on them (1 to 1 list)
+and from that you choose all the genes 
+awk '{print $10}' exons_red3.gtf | sed 's/"//g' | sed 's/;//g' | sort | uniq > list_of_genes.txt
+awk -F"-" '{print $2}' list_of_genes.txt > list_of_scaffolds.txt
+paste list_of_scaffolds.txt list_of_genes.txt  > list_of_genes_and_locations.txt
+awk 'NR == FNR {x[$1] = 1; next} ($1 in x) {print $0}' test.match list_of_genes_and_locations.txt > scaffolds_aa_at_list_of_genes.txt
+
+and then choose from variance files the exons you have measured the variance for knowing what you put in there
+awk 'NR == FNR {x[$2] = 1; next} ($1 in x) {print $0}' scaffolds_aa_at_list_of_genes.txt *_Alex_ME_variance.theta > alex_me_variance.theta
+
+REMOVE ALL THE .PILEUP AND .MPILEUP
+
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+###Plot the theta and pi per population in python
+import pandas as pd
+import pyham
+from collections import Counter
+from Bio import SeqIO
+import seaborn as sns
+import matplotlib
+import matplotlib.pyplot as plt
+import seaborn as sns
+pd.set_option('max_colwidth',200)
+%matplotlib inline
+plt.style.use('ggplot')
+
+#seaborn options
+sns.set(rc={'axes.facecolor':'white', 'figure.facecolor':'white'}, font_scale=1.5)
+sns.set_style('whitegrid')
+
+working_dir = 'C:/Users/nzaja/Documents/poolseq/'
+subsampled_variance_files= ['Alex_pop1_exonic_variance.pi',
+                            'Alex_pop2_exonic_variance.pi',
+                            'Alex_pop3_exonic_variance.pi',
+                            'Alex_pop4_exonic_variance.pi',
+                            'Alex_pop5_exonic_variance.pi',
+                            'Alex_pop6_exonic_variance.pi',
+                            'Map_pop1_exonic_variance.pi',
+                            'Map_pop2_exonic_variance.pi',
+                            'Map_pop3_exonic_variance2.pi',
+                            'Mid_pop1_exonic_variance.pi',
+                            'Mid_pop2_exonic_variance.pi',
+                            'Mid_pop3_exonic_variance.pi',
+                            'Paringa_pop1_exonic_variance.pi',
+                            'Paringa_pop2_exonic_variance.pi',
+                            'Paringa_pop3_exonic_variance.pi',
+                            'Paringa_pop4_exonic_variance.pi',
+                            'Selfe_pop1_exonic_variance.pi',
+                            'Selfe_pop2_exonic_variance.pi',
+                            'Selfe_pop3_exonic_variance.pi']
+
+def read_in_subsampled_variance_files(subsampled_infile, source):
+    '''returns a formatted pandas dataframe with relevant go info'''
+    df = pd.read_csv(subsampled_infile, sep="\t", header = None, na_values=['na'])
+    df.rename({0:"contig", 1:"nb.of.snps", 2:"cov", 3: "value"}, inplace=True, axis=1)
+    df['value'] = df["value"]
+    df['source'] = source
+    #print("Read in {} GO annotations for {}.".format(len(df), go_annotations_infile))
+    df = df[['source','value']]
+    return df
+
+all_go_df = pd.DataFrame(columns = ['source', 'value'])
+
+for file in subsampled_variance_files:
+    source = file.split(".")[0]
+    df = read_in_subsampled_variance_files(working_dir + file, source)
+    all_go_df = all_go_df.append(df)
+
+
+all_go_df.isna()
+df2 = all_go_df[all_go_df['value'].notna()]
+fig, ax = plt.subplots(figsize=(15,15))
+ax = sns.boxplot(x="source", y="value", data=df2, palette="Set3")
+mylabels = [
+"Alexandrina_pop1",
+"Alexandrina_pop2",
+"Alexandrina_pop3",
+"Alexandrina_pop4",
+"Alexandrina_pop5",
+"Alexandrina_pop6",
+"Mapourika_pop1",
+"Mapourika_pop2",
+"Mapourika_pop3",
+"Middleton_pop1",
+"Middleton_pop2",
+"Middleton_pop3",
+"Paringa_pop1",
+"Paringa_pop2",
+"Paringa_pop3",
+"Paringa_pop4",
+"Selfe_pop1",
+"Selfe_pop2",
+"Selfe_pop3"]
+ax.set_xticklabels(mylabels, rotation=90)
+plt.ylabel("Nucleotide diversity (Pi)")
+plt.xlabel("Pool/Population")
+
+
+fig, ax = plt.subplots(figsize=(12,6))
+ax = sns.boxplot(x="source", y="value", \
+                 data=all_go_df)
+ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
+plt.ylabel("Nucleotide diversity")
+plt.xlabel("Pool/Population")
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+### Calculate average coverage per scaffold
+
+#!/usr/bin/bash
+cat list_of_files | while IFS= read -r line;
+do
+        awk '
+        NR>1{
+                arr[$1]   += $3
+                count[$1] += 1
+        }
+        END{
+                for (a in arr) {
+                print  a "\t" arr[a] / count[a]
+                }
+        }
+        '< $line > ${line}.output
+done
+
+
+
+###plot in python:
+import pandas as pd
+import pyham
+from collections import Counter
+from Bio import SeqIO
+import seaborn as sns
+import matplotlib
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+pd.set_option('max_colwidth',200)
+%matplotlib inline
+plt.style.use('ggplot')
+
+#seaborn options
+sns.set(rc={'axes.facecolor':'white', 'figure.facecolor':'white'}, font_scale=1.5)
+sns.set_style('whitegrid')
+
+working_dir = 'C:/Users/nzaja/Documents/poolseq/'
+subsampled_coverage_files= ['201908_A_B_Alex_NE.cov_per_scaffold',
+                            '201908_A_B_Alex_NW.cov_per_scaffold',
+                            '201908_A_B_Alex_MW.cov_per_scaffold',
+                            '201908_A_B_Alex_ME.cov_per_scaffold',
+                            '201908_A_B_Alex_CAMP2ndWP.cov_per_scaffold',
+                            '201908_A_B_Alex_SE.cov_per_scaffold',
+                            '201908_A_B_Middleton_Pool1.cov_per_scaffold',
+                            '201908_A_B_Middleton_Pool2.cov_per_scaffold',
+                            '201908_A_B_Middleton_Pool3.cov_per_scaffold',
+                            '201908_A_B_Mapourika_Jetty_Pool1.cov_per_scaffold',
+                            '201908_A_B_Mapourika_Mix_Pool2.cov_per_scaffold',
+                            '201908_A_B_Mapourika_Otto_Pool3.cov_per_scaffold',
+                            '201908_A_B_Paringa_Pool1.cov_per_scaffold',
+                            '201908_A_B_Paringa_Pool2.cov_per_scaffold',
+                            '201908_A_B_Paringa_Pool3.cov_per_scaffold',
+                            '201908_A_B_Paringa_Pool4.cov_per_scaffold',
+                            '201908_A_B_Selfe_Pool1.cov_per_scaffold',
+                            '201908_A_B_Selfe_Pool2.cov_per_scaffold',
+                            '201908_A_B_Selfe_Pool3.cov_per_scaffold']
+
+def read_in_subsampled_coverage_files(subsampled_infile, source):
+    '''returns a formatted pandas dataframe with relevant go info'''
+    df = pd.read_csv(subsampled_infile, sep="\t", header = None)
+    df.rename({0:"contig", 1:"cov"}, inplace=True, axis=1)
+    df['coverage'] = df["cov"]
+    df['source'] = source
+    #print("Read in {} GO annotations for {}.".format(len(df), go_annotations_infile))
+    df = df[['source','coverage']]
+    return df
+
+all_go_df = pd.DataFrame(columns = ['source', 'coverage'])
+
+for file in subsampled_coverage_files:
+    source = file.split(".")[0].split("201908_A_B_")[1]
+    df = read_in_subsampled_coverage_files(working_dir + file, source)
+    all_go_df = all_go_df.append(df)
+
+fig, ax = plt.subplots(figsize=(12,6))
+ax = sns.boxplot(x="source", y="coverage", \
+                 data=all_go_df, showfliers=False)
+ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
+plt.ylabel("Coverage")
+plt.xlabel("Pool/Population")
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+###Filter sync - leave just biallelic snps
+
+### Run snp-diff-freq.pl.
+
+#!/bin/bash
+#BSUB -J "snp[1-X]%10"
+#BSUB -R "rusage[mem=4000]"
+#BSUB -n 1
+#BSUB -W 02:00
+
+IDX=$LSB_JOBINDEX
+name=`sed -n ${IDX}p < list_intervals`
+perl /cluster/apps/gdc/popoolation2/1201/snp-frequency-diff.pl --input ${name}_all_pops.sync --output-prefix ${name}_snp_freq_diff --min-count 6 --min-coverage 25 --max-coverage 200
+
+###Select all biallelic and higher snps for verification
+
+awk '$4 >=2 {print $1"\t"$2}' ${name}_snp_freq_diff_pwc > SNP-id-file-for-filtering-sync_${name}.txt
+awk 'NR == FNR {x[$1"_"$2] = 1; next} ($1"_"$2 in x) {print $0}' SNP-id-file-for-filtering-sync_${name}.txt ${name}_all_pops.sync > ${name}_filtered_step1.sync ##might require 3500Mb memory
+
+###You verify that at least one population has a min count of 6 for the two alleles bsub -n1 -W 6:00 -R"rusage[mem=3000]" "sh test.filter.sh"
+sed 's/:/\t/g' ${name}_filtered_step1.sync | awk '{print $4"\t"$10"\t"$16"\t"$22"\t"$28"\t"$34"\t"$40"\t"$46"\t"$52"\t"$58"\t"$64"\t"$70"\t"$76"\t"$82"\t"$88"\t"$94"\t"$100"\t"$106"\t"$112}'| awk 'BEGIN { IFS = OFS = "\t" } {for (column = 1; column <= NF; ++column) {if ($column >= 6) {$column = "A"} else {$column = 0}} print }' > file.txt
+sed 's/:/\t/g' ${name}_filtered_step1.sync | awk '{print $5"\t"$11"\t"$17"\t"$23"\t"$29"\t"$35"\t"$41"\t"$47"\t"$53"\t"$59"\t"$65"\t"$71"\t"$77"\t"$83"\t"$89"\t"$95"\t"$101"\t"$107"\t"$113}'| awk 'BEGIN { IFS = OFS = "\t" } {for (column = 1; column <= NF; ++column) {if ($column >= 6) {$column = "T"} else {$column = 0}} print }' > file1.txt
+sed 's/:/\t/g' ${name}_filtered_step1.sync | awk '{print $6"\t"$12"\t"$18"\t"$24"\t"$30"\t"$36"\t"$42"\t"$48"\t"$54"\t"$60"\t"$66"\t"$72"\t"$78"\t"$84"\t"$90"\t"$96"\t"$102"\t"$108"\t"$114}'| awk 'BEGIN { IFS = OFS = "\t" } {for (column = 1; column <= NF; ++column) {if ($column >= 6) {$column = "C"} else {$column = 0}} print }' > file2.txt
+sed 's/:/\t/g' ${name}_filtered_step1.sync | awk '{print $7"\t"$13"\t"$19"\t"$25"\t"$31"\t"$37"\t"$43"\t"$49"\t"$55"\t"$61"\t"$67"\t"$73"\t"$79"\t"$85"\t"$91"\t"$97"\t"$103"\t"$109"\t"$115}'| awk 'BEGIN { IFS = OFS = "\t" } {for (column = 1; column <= NF; ++column) {if ($column >= 6) {$column = "G"} else {$column = 0}} print }' > file3.txt
+paste file.txt file1.txt file2.txt file3.txt| column -s $'\t' -t > file4.txt
+while read -r line; do echo "$line" | grep -o '[^ ]*' | sort -h | uniq | paste -s; done < file4.txt | sed 's/0//g' | awk '{ count = 0; for (i = 1; i <= NF; ++i) ++count; print count }' > file5.txt
+awk '{print $1"\t"$2"\t"$3}' ${name}_filtered_step1.sync > ${name}_filtered_step1.sync.scaffold.ids
+paste ${name}_filtered_step1.sync.scaffold.ids file5.txt | column -s $'\t' -t > file_for_counting_biallelic_snps_${name}.txt
+awk '$4 == 2 {print $1"\t"$2}' file_for_counting_biallelic_snps_${name}.txt > file_for_counting_biallelic_snps_${name}_ids.txt
+awk 'NR == FNR {x[$1"_"$2] = 1; next} ($1"_"$2 in x) {print $0}' ile_for_counting_biallelic_snps_${name}_ids.txt ${name}_all_pops.sync > ${name}_filtered_step2.sync
+
+rm file.txt file1.txt file2.txt file3.txt file4.txt file5.txt ${name}_filtered_step1.sync {name}_filtered_step1.sync.scaffold.ids file_for_counting_biallelic_snps_${name}_ids.txt 
+
+###In your filtered sync file replace any values below 6 count with 0s for correct Fst analysis.
+
+####extract different populations Run as bsub -n1 -W 2:00 -R"rusage[mem=1000]" "sh clean_up_sync_file.sh"
+cut -f1,2,3 ${name}_filtered_step2.sync > col_123
+cut -f 4 ${name}_filtered_step2.sync > pop00
+cut -f 5 ${name}_filtered_step2.sync > pop01
+cut -f 6 ${name}_filtered_step2.sync > pop02
+cut -f 7 ${name}_filtered_step2.sync > pop03
+cut -f 8 ${name}_filtered_step2.sync > pop04
+cut -f 9 ${name}_filtered_step2.sync > pop05
+cut -f 10 ${name}_filtered_step2.sync > pop06
+cut -f 11 ${name}_filtered_step2.sync > pop07
+cut -f 12 ${name}_filtered_step2.sync > pop08
+cut -f 13 ${name}_filtered_step2.sync > pop09
+cut -f 14 ${name}_filtered_step2.sync > pop10
+cut -f 15 ${name}_filtered_step2.sync > pop11
+cut -f 16 ${name}_filtered_step2.sync > pop12
+cut -f 17 ${name}_filtered_step2.sync > pop13
+cut -f 18 ${name}_filtered_step2.sync > pop14
+cut -f 19 ${name}_filtered_step2.sync > pop15
+cut -f 20 ${name}_filtered_step2.sync > pop16
+cut -f 21 ${name}_filtered_step2.sync > pop17
+cut -f 22 ${name}_filtered_step2.sync > pop18
+cut -f 23 ${name}_filtered_step2.sync > pop19
+
+####replace count <6 by 0 (clean to have bi-allelic)
+for j in `ls pop*`
+do
+sed 's/:/\t/g' "$j" > "$j"_1.tmp
+awk '{for(i=1;i<=NF;i++) $i=$i<6?0:$i} 1' "$j"_1.tmp > "$j"_2.tmp
+sed 's/ /:/g' "$j"_2.tmp > "$j"_3.tmp
+done
+
+#####combine all the populations in a new sync
+paste *_3.tmp > combine.tmp
+paste col_123 combine.tmp > clean_biallelic_${name}_filtered_step3.sync
+
+rm *.tmp
+rm pop*
+rm col_123
+
+###count number of snps per each step
+find . -name '*_pops.sync' | xargs wc -l
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+##filter out sync based on coordnates of repetitive DNA content (RepeatMasker)
+(#!/bin/bash
+
+#BSUB -J "RepeatModeler"
+#BSUB -W 24:00
+#BSUB -n 10
+#BSUB -R "rusage[mem=10000]"
+
+module load gcc/4.8.2 gdc perl/5.18.4 hmmer/3.1 rmblast/2.2.28 repeatmasker/4.0.6
+
+/cluster/apps/gdc/repeatmasker/4.0.6/RepeatMasker  -e ncbi -pa 10 -s -lib library.fa -cutoff 350 -dir /cluster/scratch/zajacn/repeatmasker/RM_agouti_output -excln red3.agouti.run1.fasta)
+
+you make a file called: coordinates_of_repeats.txt
+And then you run for every scaffold set: 
+##the choosing script
+awk '
+NR==FNR{range[$1,$2,$3]; next }
+FNR==1
+{
+    for(x in range) {
+        split(x, check, SUBSEP);
+        if($1==check[1] && $2>=check[2] && $2<=check[3])
+                {print $0}
+    }
+}
+' scaffolds_agouti_aa_repeats.txt  scaffolds_agouti_aa_filtered_step3_clean_biallelic.sync
+run like this :  bsub -n1 -W2:00 "sh choose_snps_within_range.sh > scaffolds_agouti_aa_repeats.sync"
+or on loop:
+#!/bin/bash
+cat list_of_scaffolds | while IFS= read -r line;
+do
+        sh choose_snps_within_range.sh ${line}_repeats.txt ${line}_alex_biallelic_filtered_mincount6_clean.sync > ${line}_repeats.sync
+done
+
+and then filter out
+#!/bin/bash
+cat list_of_scaffolds | while IFS= read -r line;
+do
+	awk 'NR == FNR {x[$1"_"$2] = 1; next} !($1"_"$2 in x) {print $0}' ${line}_snps_in_repeats.sync ${line}_step3_lakes_biallelic_filtered_mincount10_clean.sync > ${line}_step4_lakes_norepeats_clean.sync
+done
+---------------------------------------------------------------------------------------------------------------------------------------------------
+### PCA per scaffold set - or combine is that works
+
+library(haploReconstruct)
+library(data.table)
+base.pops <- c(FALSE, TRUE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE,
+          FALSE, FALSE, FALSE, FALSE, FALSE)
+
+min_allele_freq <- sync_to_frequencies("/cluster/project/gdc/people/zajacn/poolseq_mapping/results/scaffold_set_ao_filtered.sync", base.pops, header = F, mincov = 15)
+write.table(min_allele_freq, "./scaffold_set_ao_freq_table.txt")
+
+run on cluster as bsub -n1 -W 1:00 -R "rusage[mem=5000]  "Rscript --vanilla sync_to_frequencies_PCA_poolseq.R"
+
+the export to R and do:
+pca_res <- prcomp(t(as.matrix(min_allele_freq[,7:25])))
+library(ggfortify)
+autoplot(pca_res, , data = iris, colour = 'Species', label = TRUE, label.size = 3)
+
+###best split into 3 R scripts:
+da1<- read.table(file.choose(), header = T, sep = '\t')
+row.has.na <- apply(da1, 1, function(x){any(is.na(x))})
+sum(row.has.na)
+da2 <- da1[!row.has.na,]
+##then
+library(haploReconstruct)
+library(data.table)
+base.pops <- c(FALSE, TRUE, FALSE, FALSE, FALSE, FALSE)
+min_allele_freq <- sync_to_frequencies("/cluster/scratch/zajacn/poolseq_mapping/mapping/Fst/all_scaffolds_alex_biallelic_filtered_mincount6_clean_norepeats.sync", base.pops, header = F, mincov = 15)
+write.table(min_allele_freq, "./all_scaffolds_alex_biallelic_filtered_mincount6_clean_norepeats_allele_freq.table")
+##then
+library(haploReconstruct)
+library(data.table)
+da<- read.table("./all_scaffolds_alex_biallelic_filtered_mincount6_clean_norepeats_allele_freq.table", header = T, sep = ' ')
+da1 <- na.omit(da, cols=seq_along(da$base.pops), invert=FALSE)
+names(da1)[names(da1) == "L1"] <- "Alexandrina South West"
+names(da1)[names(da1) == "L2"] <- "Alexandrina Middle East"
+names(da1)[names(da1) == "L3"] <- "Alexandrina Middle West"
+names(da1)[names(da1) == "L4"] <- "Alexandrina North East"
+names(da1)[names(da1) == "L5"] <- "Alexandrina North West"
+names(da1)[names(da1) == "L6"] <- "Alexandrina South East"
+write.table(da1, "./all_scaffolds_alex_biallelic_filtered_mincount6_clean_norepeats_allele_freq.table.txt")
+##then
+library(haploReconstruct)
+library(data.table)
+library(ggfortify)
+library(ggplot2)
+library(ggrepel)
+library(factoextra)
+da1<- read.table("./all_scaffolds_alex_biallelic_filtered_mincount6_clean_norepeats_allele_table_noNAsandemptylines.txt", header = T, sep = ' ')
+pca_res <- prcomp(t(as.matrix(da1[,8:13])))
+pdf("./all_scaffolds_alex_biallelic_filtered_mincount6_clean_norepeats_prcomp_PCA.pdf", width = 11, height = 8.5)
+autoplot(pca_res, x=1, y=2, label = TRUE, label.size = 3, label.repel = TRUE)
+autoplot(pca_res, x=3, y=4, label = TRUE, label.size = 3, label.repel = TRUE)
+fviz_screeplot(pca_res, addlabels = TRUE, ylim = c(0, 50))
+fviz_pca_ind(pca_res, col.ind = "cos2", gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), repel = TRUE)
+fviz_pca_ind(pca_res, axes = c(1, 3), col.ind = "cos2", gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"), repel = TRUE)
+dev.off()
+-------------------------------------------------------------------------------------------------------------------------------------------------------
+###Run Fst sliding window - Fst sliding window ignored deletions
+
+#!/bin/bash
+#BSUB -J "fst[1-60]%10"
+#BSUB -R "rusage[mem=1000]"
+#BSUB -n 1
+#BSUB -W 02:00
+
+IDX=$LSB_JOBINDEX
+name=`sed -n ${IDX}p < list_intervals`
+perl /cluster/apps/gdc/popoolation2/1201/fst-sliding.pl --input ${name}_filtered.sync --output ${name}_w500.fst --min-count 6 --min-coverage 25 --max-coverage 200 --min-covered-fraction 0.5 --window-size 500 --step-size 500 --pool-size 48
+
+--------------------------------------------------------------------------------------------------------------------------------------------------
+### Calculate column average from Fst_w500 - for background Fst
+
+less scaffold_set_ag_w500.fst | sed 's/[^[:space:]]*:[^[:space:]]*=//g' | awk '{ for(i=1;i<=NF;i++) total[i]+=$i ; }  END { for(i=1;i<=NF;i++) printf "%f ",total[i]/NR ;}'
+
+###Create a neighbour joining tree with R:
+Create a matrix like so filled with values each row and column. Remove the 1st column.
+	pop1	pop2	pop3
+pop1	0
+pop2		0
+pop3			0
+
+
+Submit that to R:
+
+library(ape)
+library(phangorn)
+tree <- read.table(file.choose(), header = T, sep = "\t")
+D <- as.matrix(tree)
+NJtree <- nj(D)
+plot(NJtree)
+UPGMAtree <- upgma(D)
+
+STORE AWAY THE SYNC, FST, PI AND THETA FILES. REMOVE EVERYTHING ELSE.
+DO A DISTRIBUTION:
+
+range(new.tg.2$`1_2`)
+breaks = sed (0,MAX, by=0.005)
+X.cut = cut(new.tg.2$`1_2`, breaks, right = FALSE)
+X.freq = table(X.cut)
+cbind(X.freq)
+barplot(X.freq)
+-------------------------------------------------------------------------------------------------------------------------------------------------------
+
+###Focus analysis on pools 1 to 6  - Alexandrina
+from each Fst file take out columns: 1-10, 24-27, 41-43, 57-58, 72 - all alexandrina comparisons
+
+awk '{print $1"\t"$2"\t"$3"\t"$4"\t"$5"\t"$6"\t"$7"\t"$8"\t"$9"\t"$10"\t"$24"\t"$25"\t"$26"\t"$27"\t"$41"\t"$42"\t"$43"\t"$57"\t"$58"\t"$72}' scaffold_set_aa_w500.fst > scaffold_set_aa_Alex_w500.fst
+etc. 
+then choose top 0.5% of differentiated windows in the following set of commands: 
+##1. count how many windows you have
+less *_Alex_w500.fst | wc -l
+
+##2. Remove all lines with "na".
+less *_Alex_w500.fst | sed 's/[^[:space:]]*:[^[:space:]]*=//g'| awk '$6 != "na" || $7 != "na"|| $8 != "na" || $9 != "na" || $10 != "na" || $11 != "na" || $12 != "na" || $13 != "na" || $14 != "na" || $15 != "na" || $16 != "na" || $17 != "na" || $18 != "na" || $19 != "na" || $20 != "na" {print}' > Alex_w500.fst
+
+##2. Choose only scaffolds with genes. 
+q scaffolds_genes Alex_w500.fst > scaffolds_with_genes_Alex_w500.fst
+
+##3. Find the top 0.1% differentiated windows from those. (after removal of NAs calculate how many windows will be 0.1% differentiated windows)
+awk '$6 > 0.15 || $7 > 0.15 || $8 > 0.15 || $9 > 0.15 || $10 > 0.15 || $11 > 0.15 || $12 > 0.15 || $13 > 0.15 || $14 > 0.15 || $15 > 0.15 || $16 > 0.15 || $17 > 0.15 || $18 > 0.15 || $19 > 0.15 || $20 > 0.15 {print}' scaffolds_with_genes_Alex_w500.fst > top_differentiated_Fst_windows_Alex.fst
+ 
+
+where scaffolds_genes look like:
+jcf7180000237966        0       17789 
+jcf7180000228245        0       20267 
+jcf7180000228246        0       26350 
+jcf7180000244661        0       16974 
+jcf7180000254180        0       22541 
+jcf7180000251636        0       8949 
+jcf7180000240750        0       38999 
+jcf7180000277304        0       39379 
+jcf7180000277305        0       56211 
+jcf7180000249662        0       20095 
+jcf7180000243985        0       16786 
+jcf7180000232250        0       21161 
+
+### So now that I know which scaffolds and which windows I am interested in I create a table like so:
+
+awk '{print $1"\t"($2-500)"\t"$2}' > table.txt
+
+### From all sync files I extract only the SNPs within those high differentiated windows:
+
+awk '
+NR==FNR{range[$1,$2,$3]; next }
+FNR==1
+{
+    for(x in range) {
+        split(x, check, SUBSEP);
+        if($1==check[1] && $2>=check[2] && $2<=check[3])
+                {print $0, check[1]} ##check[1] if you want to print column 1 from first file as well
+    }
+}
+' table.txt *filtered.sync 
+
+#Run as bsub -n1 -W 1:00 "sh extract_exons > differentiated_scaffolds_with_genes_Alex.sync"
+
+### Run Fst per SNP for those windows.
+
+#!/bin/bash
+#BSUB -J "fst[1]"
+#BSUB -R "rusage[mem=1000]"
+#BSUB -n 1
+#BSUB -W 02:00
+
+IDX=$LSB_JOBINDEX
+name=`sed -n ${IDX}p < list_intervals`
+perl /cluster/apps/gdc/popoolation2/1201/fst-sliding.pl --input differentiated_scaffolds_with_exons_Alex.sync --output differentiated_scaffolds_with_exons_Alex_per_snp.fst --min-count 6 --min-coverage 25 --max-coverage 200 --min-covered-fraction 0.5 --window-size 1 --step-size 1 --pool-size 48
+
+### Out of the files filter the lines with "na".
+
+less differentiated_scaffolds_with_exons_Alex_per_snp.fst | sed 's/[^[:space:]]*:[^[:space:]]*=//g'| awk '$6 != "na" || $7 != "na"|| $8 != "na" || $9 != "na" || $10 != "na" || $11 != "na" || $12 != "na" || $13 != "na" || $14 != "na" || $15 != "na" || $16 != "na" || $17 != "na" || $18 != "na" || $19 != "na" || $20 != "na" {print}' | awk '$6 != 0 {print}' | awk '{print $1"\t"$2}' > differentiated_scaffolds_with_exons_Alex_per_snp.filtered.fst
+
+### Make an input file for SNPdat with looks like so:
+(scaffolds_name	position	mutation)
+
+awk 'NR == FNR {x[$1"_"$2] = 1; next} ($1"_"$2 in x) {print $1"\t"$2"\t"$3}' differentiated_scaffolds_with_exons_Alex_per_snp.filtered.fst *_filtered.sync > snp_dat_file_for_alex.txt
+
+###Run SNPdat which will tell you what genes you are looking at within those high differentiated windows, if the SNPs are within exons
+bsub -n1 -W 1:00 "perl SNPdat_v1.0.5.pl -i snp_dat_file_for_alex.txt -g mpileup_allpops/exons_red3.gtf -f /cluster/work/gdc/shared/p402/redundans/red3/red3.contigs.fa"
+ 
+What to do with that?
+Identify between which pair of pools there is high differentiation?
+
+less differentiated_scaffolds_with_exons_Alex_per_snp.fst | sed 's/[^[:space:]]*:[^[:space:]]*=//g'| awk '$6 != "na" || $7 != "na"|| $8 != "na" || $9 != "na" || $10 != "na" || $11 != "na" || $12 != "na" || $13 != "na" || $14 != "na" || $15 != "na" || $16 != "na" || $17 != "na" || $18 != "na" || $19 != "na" || $20 != "na" {print}' | awk '$6 != 0 {print}' | awk '{print $1"\t"$2"\t"$3"\t"$4"\t"$5"\t"$6"\t"$7"\t"$8"\t"$9"\t"$10"\t"$24"\t"$25"\t"$26"\t"$27"\t"$41"\t"$42"\t"$43"\t"$57"\t"$58"\t"$72}'
+
+Plot the differentiated regions in R, best scaffold by scaffold:
+tg<- read.table(file.choose(), header = F, sep = '\t')
+attach(tg)
+names(tg)
+par(mfcol = c(16, 1), mar = numeric(4), oma = c(4, 4, 1, 1), 
+    mgp = c(2, .6, 0))
+plot(newdata$V2, newdata$V6, type= "l", axes = FALSE, ylim=c(0,0.15)) 
+title(main = "CAMP:ME", line = -1)
+axis(2L)
+box()
+plot(newdata$V2, newdata$V7, type= "l", axes = FALSE, ylim=c(0,0.15))
+title(main = "CAMP:MW", line = -1)
+axis(2L)
+box()
+plot(newdata$V2, newdata$V8, type= "l", axes = FALSE, ylim=c(0,0.15))
+title(main = "CAMP:NE", line = -1)
+axis(2L)
+box()
+plot(newdata$V2, newdata$V9, type= "l", axes = FALSE, ylim=c(0,0.15))
+title(main = "CAMP:NW", line = -1)
+axis(2L)
+box()
+plot(newdata$V2, newdata$V10, type= "l", axes = FALSE, ylim=c(0,0.15))
+title(main = "CAMP:SE", line = -1)
+axis(2L)
+box()
+plot(newdata$V2, newdata$V11, type= "l", axes = FALSE, ylim=c(0,0.15))
+title(main = "ME:MW", line = -1)
+axis(2L)
+box()
+plot(newdata$V2, newdata$V12, type= "l", axes = FALSE, ylim=c(0,0.15))
+title(main = "ME:NE", line = -1)
+axis(2L)
+box()
+plot(newdata$V2, newdata$V13, type= "l", axes = FALSE, ylim=c(0,0.15))
+title(main = "ME:NW", line = -1)
+axis(2L)
+box()
+plot(newdata$V2, newdata$V14, type= "l", axes = FALSE, ylim=c(0,0.15))
+title(main = "ME:SE", line = -1)
+axis(2L)
+box()
+plot(newdata$V2, newdata$V15, type= "l", axes = FALSE, ylim=c(0,0.15))
+title(main = "MW:NE", line = -1)
+axis(2L)
+box()
+plot(newdata$V2, newdata$V16, type= "l", axes = FALSE, ylim=c(0,0.15))
+title(main = "MW:NW", line = -1)
+axis(2L)
+box()
+plot(newdata$V2, newdata$V17, type= "l", axes = FALSE, ylim=c(0,0.15))
+title(main = "MW:SE", line = -1)
+axis(2L)
+box()
+plot(newdata$V2, newdata$V18, type= "l", axes = FALSE, ylim=c(0,0.15))
+title(main = "NE:NW", line = -1)
+axis(2L)
+box()
+plot(newdata$V2, newdata$V19, type= "l", axes = FALSE, ylim=c(0,0.15))
+title(main = "NE:SE", line = -1)
+axis(2L)
+box()
+plot(newdata$V2, newdata$V20, type= "l", axes = FALSE, ylim=c(0,0.15))
+title(main = "NW:SE", line = -1)
+axis(2L)
+box()
+plot(0, 0, xlab = "jcf", ylab = "", xlim=c(36750,37504), ylim=c(0,1))
+segments(x0=36750, y0=0.5, x1=37309, y1=0.5, col = "cornflowerblue", lwd = 5)
+
+What is the value of Tajima's D for those regions within those pools? 
+
+Is Fst decreased around these highly differentiated regions?
+
+Stength of association of highly differentiated regions with a location in the lake?
+
+###PROCEED TO GO ANNOTATION OF THOSE GENES IN PYTHON:
+awk '$4 == "Exonic" {print $11}' snp_dat_file_for_alex.txt.output
+use the GO_emrichment_second_try.py and revigo to annotate these genes.
+
+Measure selection coefficient in these regions:
+Selestim - KLD between the posterior of dj and its centering distribution, Locus-specific selection coefficient dj - unfortunately it does not accept snps which don't fullfill the predicted pool criteria
+
+Poolfstat + Baypass 
+#convert sync file to pooldata in R
+library(poolfstat)
+pooldata <- popsync2pooldata(sync.file = file, poolsizes = c(48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48), poolnames = c("Alexandrina SouthWest", "Alexandrina MiddleEast", "Alexandrina MiddleWest", "Alexandrina NorthEast", "Alexandrina NorthWest", "Alexandrina SouthEast", "Mapourika Pool1", "Mapourika Pool2", "Middleton Pool1", "Middleton Pool2", "Middleton Pool3", "Paringa Pool1", "Paringa Pool2", "Paringa Pool3", "Paringa Pool4", "Selfe Pool1", "Selfe Pool2", "Selfe Pool3"), min.rc = 10, min.cov.per.pool = 25, max.cov.per.pool = 200, min.maf = 0.01, noindel = TRUE, nlines.per.readblock = 1e+06, nthreads = 1)
+pooldata_baypass <- pooldata2genobaypass (pooldata, writing.dir = "C/Users/nzaja/Documents/poolseq/", prefix = "Baypass_pooldata_Alex", subsamplesize = -1, subsamplingmethod = "thinning")
+#transfer the files onto cluster and run, 50 000 snps took 2h
+bsub -n1 -W10:00 "/cluster/home/zajacn/baypass_2.2/sources/g_baypass -gfile baypas_pooldata.genobaypass -poolsizefile baypas_pooldata.poolsize -outprefix miccore"
+#then run R on cluster
+
+##best to also split it into chuncks of max 50 000 snps in  R
+library(poolfstat)
+dir<- "/cluster/scratch/zajacn/baypass/concatenated_files/"
+files<-list.files(path=dir, full.names = FALSE)
+for (file in files){
+        name <- file
+        pooldata <- popsync2pooldata(sync.file = file.path(dir,file), poolsizes = c(48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48,48), poolnames = c("Alexandrina SouthWest", "Alexandrina MiddleEast", "Alexandrina MiddleWest", "Alexandrina NorthEast", "Alexandrina NorthWest", "Alexandrina SouthEast", "Mapourika Pool1", "Mapourika Pool2", "Middleton Pool1", "Middleton Pool2", "Middleton Pool3", "Paringa Pool1", "Paringa Pool2", "Paringa Pool3", "Paringa Pool4", "Selfe Pool1", "Selfe Pool2", "Selfe Pool3"), min.rc = 10, min.cov.per.pool = 25, max.cov.per.pool = 200, min.maf = 0.01, noindel = TRUE, nlines.per.readblock = 1e+06, nthreads = 1)
+        pooldata2genobaypass(pooldata, writing.dir = "/cluster/scratch/zajacn/baypass/", prefix = paste0(name,"_baypass"), subsamplesize = -1, subsamplingmethod = "thinning")
+        file.copy(file.path(dir,file), "/cluster/scratch/zajacn/baypass/")
+        file.remove(file.path(dir,file))
+        rm(files)
+        files<-list.files(path=dir, full.names = FALSE) ##or for (i in 1:files) 
+        							##files <- files[-i]
+}
+
+
+#source the baypass R functions (check PATH)
+source("/cluster/home/zajacn/baypass_2.2/utils/baypass_utils.R")
+library(corrplot)
+#upload the estimated Omega matrix
+omega=as.matrix(read.table("miccore_mat_omega.out"))
+pop.names=c("CAMP","ME","MW","NE","NW","SE")
+dimnames(omega)=list(pop.names,pop.names)
+# Visualization of the matrix
+# Using SVD decomposition
+pdf("./Baypass_results.pdf", width = 11, height = 8.5)
+plot.omega(omega=omega,pop.names=pop.names)
+# as a correlation plot
+require(corrplot)
+cor.mat=cov2cor(omega)
+corrplot(cor.mat,method="color",mar=c(2,1,2,2)+0.1,
+main=expression("Correlation map based on"~hat(Omega)))
+# as a heatmap and hierarchical clustering tree (using the average agglomeration method)
+hclust.ave <- function(x) hclust(x, method="average")
+heatmap(1-cor.mat,hclustfun = hclust.ave,
+main=expression("Heatmap of "~hat(Omega)~"("*d[ij]*"=1-"*rho[ij]*")"))
+dev.off()
+
+#Estimates of the XtX differentiation measures (using the calibrated XtXst estimator)
+pdf("./Baypass_results2.pdf", width = 11, height = 8.5)
+anacore.snp.res=read.table("miccore_summary_pi_xtx.out",h=T)
+#check behavior of the p-values associated to the XtXst estimator
+hist(10**(-1*anacore.snp.res$log10.1.pval.),freq=F,breaks=50)
+abline(h=1)
+layout(matrix(1:2,2,1))
+plot(anacore.snp.res$XtXst)
+plot(anacore.snp.res$log10.1.pval.,ylab="XtX P-value (-log10 scale)")
+abline(h=3,lty=2) #0.001 p--value theshold
+dev.off()
+
+####calibrating XtXt statistic with a simulated POD
+source("/cluster/home/zajacn/baypass_2.2/utils/baypass_utils.R")
+dir<- "/cluster/scratch/zajacn/poolseq_mapping/mapping/mpileup/baypass/baypass_2/"
+omega=as.matrix(read.table("susampled_forcalculating_omega_baypass_mat_omega.out"))
+files<-list.files(path=dir, pattern = "*.genobaypass")
+for (file in files){
+        name <- sub(pattern = "(.*)\\..*$", replacement = "\\1", basename(file))
+        pi.beta.coef=read.table(paste0(name,"_output_summary_beta_params.out"),h=T)$Mean
+        bta14.data<-geno2YN(file)
+        da<-simulate.baypass(omega.mat=omega,nsnp=10000,sample.size=bta14.data$NN, beta.pi=pi.beta.coef,pi.maf=0,suffix=paste0(name,"_pods"))
+}
+--------------------------------------------------------------------------------------------------------------------------------------------------------
+##run pcadapt
+##remove all lines where there are only 0s or NAs
+awk '$1 != 0 || $2 != 0 || $3 != 0 || $4 != 0 || $5 != 0 || $6 != 0 {print}' all_scaffolds_alex_biallelic_filtered_mincount6_clean_norepeats_allele_freq_onlyvalues.txt | awk '$1 != "NA" && $2 != "NA" && $3 != "NA" && $4 != "NA" && $5 != "NA" && $6 != "NA" {print}' > all_scaffolds_alex_biallelic_filtered_mincount6_clean_norepeats_allele_freq_onlyvalues_noNAsandemptylines.txt
+the file needs to be allele frequency only, no names, pop names as rows, allele frequency as columns
+library(pcadapt)
+da <- read.table(file.choose(), header = F) 
+my_data %>% select(1, 3)
+filename <- read.pcadapt(t(da), type = "pool")
+res <- pcadapt(filename)
+summary(res)
+plot(res,option="screeplot")
+plot(res, option = "manhattan")
+##A list of outliers can be obtained as for individual genotype data
+padj <- p.adjust(res$pvalues, method = "BH")
+alpha <- 0.1
+outliers <- which(padj < alpha)
+length(outliers)
+##make the pca plot
+poplist <- c("CAMP", "ME", "MW", "NE", "NW", "SE")
+plot(res, option = "scores", pop = poplist)
+plot(res, option = "scores", i = 3, j = 4, pop = poplist) ##plots 3rd and 4th pc
+##The function get.pcis also available for pooled-seq data 
+get.pc(res, outliers)->aux #you get which outliers are associated with which pc
+print(aux[,2])
+da$pvalues <- res$pvalues
+merged = merge(aux, da, by.x = "SNP", by.y = "row_num", sort = TRUE)
+
+##1. Choose all outlier snps per pairwise comparison of 4 pools (2 from each lake)
+2. output the outliers 
+write.table(aux, "C:/Users/nzaja/Documents/poolseq/pcadapt.prcomp.lakes/outliers_scaffoldswithgenes/Paringa_Selfe_outliers.txt")
+3. Take the outliers to cluster and choose all those from pairwise comparison associated with pc1 which separates the 4 pools according to lake
+4. If you want all the outliers that separate a lake from all other lakes choose out all the common ones for the pairwise comparisons
+cat PC1_* | awk '{print $2}' | sort -n | uniq -c | awk '$1 == 4 {print}'
+
+
+
+
+##in linux you can count how many snps are within windows using this command:
+awk '{print (int($1/2000)+1)*2000}' snps_outliers_pcadapt_scaffoldswithgenes.txt | sort -g | uniq -c  > number_of_outliers_pcadapt_sliding_window_2000.txt
+## in order to calculate by sliding window: 
+1. divide the file into multiple files by contig
+awk -F"\t" '{print>$4}' outlier_snps_forPC1_pcadapt_allelefreq.txt
+2.do a count per 2000bp of snps 
+#!/bin/bash
+
+cat scaffolds | while IFS= read -r line;
+do
+        awk '{print (int($5/2000)+1)*2000}' $line | sort -g | uniq -c > ${line}_output.txt
+done
+3. join the output files into one including the scaffold name as the first column
+grep "" *.txt > snps_per_2knwindow.txt
+
+------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+###Run TreeMix
+#randomly sample 50k snps from a genobaypass file
+shuf -n 50000 sample.genobaypass
+#introduce comma between snp counts for each pool
+awk '{print $1","$2"\t"$3","$4"\t"$5","$6"\t"$7","$8"\t"$9","$10"\t"$11","$12"\t"$13","$14"\t"$15","$16"\t"$17","$18"\t"$19","$20"\t"$21","$22"\t"$23","$24"\t"$25","$26"\t"$27","$28"\t"$29","$30"\t"$31","$32"\t"$33","$34"\t"$35","$36}' all_scaffolds_all_lakes_filtered_mincount10_norepeats_scaffoldswithgenes_treemix_secondrun.txt > all_scaffolds_all_lakes_filtered_mincount10_norepeats_scaffoldswithgenes_treemix_secondrun1.txt
+#gzip the file and run
+ bsub -n1 -W10:00 "/cluster/project/gdc/shared/tools/treemix-1.13/bin/treemix -i all_scaffolds_all_lakes_filtered_mincount10_norepeats_scaffoldswithgenes_treemix_secondrun1.txt.gz -m 153 -o TreeMix_second_run"
+
+
+studying all lakes - so I am interested in regions that are differentiated between a lake and other lakes but are not differentiated within a lake
+
+so I calculate the average:
+less scaffold_set_XX_w500.fst | sed 's/[^[:space:]]*:[^[:space:]]*=//g' | awk '{ for(i=1;i<=NF;i++) total[i]+=$i ; }  END { for(i=1;i<=NF;i++) printf "%f ",total[i]/NR ;}'
+
+So I get the average per lake:
+e.g. Alex: 1:2, 1:3, 1:4, 1:5, 1:6, 2:3, 2:4, 2:5, 2:6, 3:4, 3:5, 3:6, 4:5, 4:6, 5:6 - get average
+
+awk '$6 <= average && $7<= average && $8 <= average && $9 <= average && $10 <= average && $24 <= average && $25 <= average && $26<= average && $27 <= average && $41 <= average && $42<= average && $43<= average && $57<= average && $58<= average && $72 <= average && 
+$11 >= 0.18 && $12 >= 0.18 && $13 >= 0.18 && $14 >= 0.18 && $15 >= 0.18 && $16 >= 0.18 && $17 >= 0.18 && $18 >= 0.18 && $19 >= 0.18 &&
+$20 >= 0.18 && $21 >= 0.18 && $22 >= 0.18 && $23 >= 0.18 && $28 >= 0.18 && $29 >= 0.18 && $30 >= 0.18 && $31 >= 0.18 && $32 >= 0.18 && $33 >= 0.18 && 
+$34 >= 0.18 && $35 >= 0.18 && $36 >= 0.18 && $37 >= 0.18 && $38 >= 0.18 && $39 >= 0.18 && $40 >= 0.18 && $44 >= 0.18 && $45 >= 0.18 &&
+$46 >= 0.18 && $47 >= 0.18 && $48 >= 0.18 && $49 >= 0.18 && $50 >= 0.18 && $51 >= 0.18 && $52 >= 0.18 && $53 >= 0.18 && $54 >= 0.18 && 
+$55 >= 0.18 && $56 >= 0.18 && $59 >= 0.18 && >= 0.18 && $60 >= 0.18 && $61 >= 0.18 && $62 >= 0.18 && $63 >= 0.18 && $64 >= 0.18 && $65 >= 0.18 && $66 
+$67 >= 0.18 && $68 >= 0.18 && $69 >= 0.18 && $70 >= 0.18 && $71 >= 0.18 && $73 >= 0.18 && $74 >= 0.18 && $75 >= 0.18 && $76 >= 0.18 && $77 >= 0.18 && $78 >= 0.18 && 
+$79 >= 0.18 && $80 >= 0.18 && $81 >= 0.18 && $82 >= 0.18 && $83 >= 0.18 && $84 >= 0.18 && $85 >= 0.18 && $86 >= 0.18 && $87 >= 0.18 && $88 >= 0.18 && $89 >= 0.18 && $90 >= 0.18 && $91 >= 0.18 && $92 >= 0.18 && $93 >= 0.18 && 
+$95 >= 0.18 && $96 >= 0.18 && $97 >= 0.18 && $98 >= 0.18 {print}'
+
+
+
+e.g Mapourika : 7:8, 7:9, 8:9
+e.g. Middleton : 10:11, 10:12, 11:12
+e.g. Paringa: 13:14, 13:15, 13:16, 14:15, 14:16, 15:16
+e.g. Selfe : 17:18, 17:19, 18:19
+
+So then we want the Fst windows that have 
+
+awk '$6 < 0.15 || $7 > 0.15 || $8 > 0.15 || $9 > 0.15 || $10 > 0.15 || $11 > 0.15 || $12 > 0.15 || $13 > 0.15 || $14 > 0.15 || $15 > 0.15 || $16 > 0.15 || $17 > 0.15 || $18 > 0.15 || $19 > 0.15 || $20 > 0.15 {print}' scaffolds_with_genes_Alex_w500.fst > top_differentiated_Fst_windows_Alex.fst

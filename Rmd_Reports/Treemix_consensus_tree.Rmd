@@ -1,0 +1,193 @@
+---
+  title:  "Treemix visualisations"
+author: "Natalia Zajac"
+output:
+  html_document: 
+  highlight: pygments
+  theme: sand
+  code_folding: hide
+  toc: yes
+  toc_depth: 4
+  editor_options: 
+  chunk_output_type: inline
+---
+
+Started on `r format(Sys.time(), "%Y-%m-%d %H:%M:%S")`
+
+```{r setup, include=FALSE}
+library(RColorBrewer)
+library(R.utils)
+library(dplyr)
+library(tidyverse)
+library(ape)
+library(ggtreeExtra)
+library(ggstar)
+library(ggplot2)
+library(ggtree)
+library(treeio)
+library(ggnewscale)
+library(ggplot2)
+library(ggnewscale)
+library(popcorn)
+library(pheatmap)
+library(ComplexHeatmap)
+library(cowplot)
+source("../Treemix/Tree_Space_Analysis_Consensus/plotting_funcs.R")
+
+poolnames = read.csv("../Treemix/Tree_Space_Analysis_Consensus/pops.lst.txt", sep = " ", header = F)
+metadata = data.frame(pool = poolnames$V1 , lake = sapply(str_split(poolnames$V1, "_"), .subset, 1)) %>% column_to_rownames("pool") %>% mutate(lake = if_else(lake == "Alex", "Alexandrina", lake))
+
+colors = list(lake = setNames(c("orange", "cornflowerblue","gold", "purple", "darkgreen"), unique(metadata$lake)))
+colors$pool = setNames(c(rep("orange",3), rep("cornflowerblue", 3), rep("gold", 3), rep("purple", 4), rep("darkgreen", 3)), poolnames$V1)
+
+
+#Read Tree
+all_trees = NULL
+p_values = NULL
+for (i in list.files("../Treemix/whole_genome_split_out/", pattern = ".treeout.gz")[c(-18,-19)]){
+  name = str_remove(str_remove(i, "random_sample_without_replacement_"), ".treeout.gz")
+  tree = read.table(file.path("../Treemix/whole_genome_split_out", i), skip = 1)
+  tree$migration = seq(1,nrow(tree),1)
+  if (nrow(tree[grepl("<", tree$V4),]) >= 1){
+  tree[grepl("<", tree$V4),]$V4 = 0.001
+  }
+  tree$V4 = as.numeric(tree$V4)
+  p_values = rbind(p_values, data.frame(p_values = tree[,4], name = name))
+  tree = tree[as.numeric(tree$V4) < 0.05,]
+  list_V6 = str_split(tree$V6, ",")
+  list_V6 = lapply(list_V6, function(x){ sapply(str_split(x, ":"), .subset, 1)})
+  list_V6 = lapply(list_V6, function(x){ str_remove(x, "\\(+")})
+  list_V6 = lapply(list_V6, function(x){ paste(x, collapse=",")})
+  tree$V6 = unlist(list_V6)
+  list_V5 = str_split(tree$V5, ",")
+  list_V5 = lapply(list_V5, function(x){ sapply(str_split(x, ":"), .subset, 1)})
+  list_V5 = lapply(list_V5, function(x){ str_remove(x, "\\(+")})
+  list_V5 = lapply(list_V5, function(x){ paste(x, collapse=",")})
+  tree$V5 = unlist(list_V5)
+  tree = tree %>% separate_longer_delim(V6, delim = ",") %>% separate_longer_delim(V5, delim = ",") 
+  tree$uniq_combo = paste0(tree$V5,"-",tree$V6)
+  #If migration occurred between internal nodes, divide the migration weight by the number of members involved 
+  tree = merge(tree, tree %>% group_by(migration) %>% summarise(count = n_distinct(uniq_combo)), by = "migration") %>% mutate(V1 = V1/count)
+  #Eliminate migration events between pools of same lake before stats
+  tree = tree[sapply(str_split(tree$V5, "_"), .subset, 1) != sapply(str_split(tree$V6, "_"), .subset, 1),]
+  tree = merge(merge(tree, tree %>% group_by(V5) %>% summarise(source = sum(V1)), by = "V5"), 
+               tree %>% group_by(V6) %>% summarise(sink = sum(V1)), by = "V6")
+  tree$genome_part = name
+  tree = tree[tree$V5 != tree$V6,]
+  all_trees = rbind(all_trees, tree)
+}
+
+all_trees = all_trees %>% dplyr::select(genome_part, uniq_combo, V5, source, V6, sink, V1, migration)
+part1 = all_trees %>% group_by(V5) %>% summarise(source = mean(source))
+part2  = all_trees %>% group_by(V6) %>% summarise(sink = mean(sink))
+part3 = all_trees %>% group_by(uniq_combo, V5, V6) %>% dplyr::summarise(V1 = mean(V1))
+tree = merge(merge(part3, part1, by = "V5"), part2, by = "V6")
+
+
+#Read in the tree structure
+treemixobj = read_treemix("../Treemix/whole_genome_split_out/random_sample_without_replacement_081")
+```
+
+# {.tabset}
+
+## All trees - checks {.tabset}
+
+### Pvalues
+
+```{r , fig.height=5, fig.width=6, warning=FALSE}
+ggplot(p_values, aes(p_values, fill = name)) + geom_histogram() + theme(legend.position = "")
+```
+
+### Number of migrations after filtering
+
+
+```{r , fig.height=5, fig.width=5, warning=FALSE}
+ggplot(all_trees %>% group_by(genome_part) %>% summarise(Number_of_Migrations = n_distinct(migration)), aes(Number_of_Migrations, fill = genome_part)) + geom_histogram() + theme(legend.position = "")
+```
+
+## Plot consensus
+
+```{r , fig.height=6, fig.width=8, warning=FALSE}
+
+myTree <- plot_treemix(treemixobj, plot.nodes = FALSE, 
+                       plot.migration = FALSE, branch.colour = "black", branch.width = 0.5, label = TRUE)
+p = myTree + 
+  xlim(0,0.014) + 
+  theme_minimal_grid() + 
+  theme(axis.line.y = element_blank(), axis.text.y = element_blank(), axis.title.y = element_blank())
+
+data = merge(p$data, metadata %>% rownames_to_column("pop"), by = "pop")
+
+p = p + geom_point(data = data, aes(x,y,color = lake), size = 2) + 
+  scale_color_manual(values = colors$lake) + 
+  theme(legend.text = element_text(size = 10), 
+        legend.title = element_text(size = 15), 
+        legend.justification = "top") + 
+  guides(color = guide_legend(override.aes = list(size = 5))) + 
+  theme(legend.key.height=unit(2,"line")) + 
+  theme(legend.key.width=unit(2,"line"))
+
+
+#nodelist = data.frame(treemixobj$tree$tip.label) %>% rownames_to_column()
+nodelist = data.frame(treemixobj.tree.tip.label = p$data$pop, rowname = seq(1,15,1))
+
+pies_outgoing = list()
+for (i in 1:15) {
+  name = nodelist[nodelist$rowname == i,]$treemixobj.tree.tip.label
+  if (nrow(tree[tree$V5 == name,])> 0) {
+    value = unique(tree[tree$V5 == name,]$source)
+    pies_outgoing[[i]] =  tree[tree$V5 == name,] %>% ggplot(aes(y = V1, fill = V6, x=sqrt(source)/2, width = sqrt(source))) + 
+    geom_bar(stat = "identity") +
+    coord_polar("y", start=0) +
+    theme_void() + scale_fill_manual(values = colors$pool) + theme(legend.position = "") 
+  } 
+} 
+names(pies_outgoing) = seq_along(pies_outgoing)
+pies_outgoing[sapply(pies_outgoing, is.null)] <- NULL
+
+pies_incoming= list()
+for (i in 1:15) {
+  name = nodelist[nodelist$rowname == i,]$treemixobj.tree.tip.label
+  if (nrow(tree[tree$V6 == name,])> 0) {
+    value = unique(tree[tree$V6 == name,]$sink)
+    pies_incoming[[i]] =  tree[tree$V6 == name,] %>% ggplot(aes(y = V1, fill = V5, x=sqrt(sink)/2, width = sqrt(sink))) + 
+    geom_bar(stat = "identity") +
+    coord_polar("y", start=0) +
+    theme_void() + scale_fill_manual(values = colors$pool) + theme(legend.position = "") 
+  } 
+} 
+names(pies_incoming) = seq_along(pies_incoming)
+pies_incoming[sapply(pies_incoming, is.null)] <- NULL
+
+for (i in names(pies_outgoing)) {
+  test = pies_outgoing[i]
+  size_factor_outgoing <- mean(unique(tree[tree$V5 == nodelist[nodelist$rowname == i,]$treemixobj.tree.tip.label,]$source))/pi * 2
+  p = inset(p, test, width = size_factor_outgoing, height = size_factor_outgoing, hjust = 0.002)
+}
+
+for (i in names(pies_incoming)) {
+  test = pies_incoming[i]
+  size_factor_incoming <-mean(unique(tree[tree$V6 == nodelist[nodelist$rowname == i,]$treemixobj.tree.tip.label,]$sink))/pi * 2
+  p <- inset(p, test, width = size_factor_incoming, height = size_factor_incoming, hjust = 0.001)
+}
+
+p$data$pop = c("Middleton3","Middleton1","Middleton2", "Alexandrina3", "Alexandrina2", "Alexandrina1", "Selfe2","Selfe1","Selfe3", "Mapourika2","Mapourika1","Mapourika3","Paringa2" , "Paringa1","Paringa3")
+
+empty_pie <- ggplot(data = data.frame(x = c(1,1), y = c(1,1), type = c("Outgoing","Incoming")), aes(x = factor(1), y = 1)) +
+  geom_bar(stat = "identity", fill = "white", color = "black", width = 1) +
+  coord_polar(theta = "y") + facet_grid(~factor(type, levels = c("Outgoing","Incoming"))) + 
+  theme(strip.text = element_text(size = 25))  + 
+  theme_classic() +
+  theme(axis.line = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        plot.title = element_text(hjust = 0.5, color = "#666666"), 
+        strip.text = element_text(size = 10), 
+        legend.text = element_text(size = 10), 
+        legend.position = "top", guides(fill=guide_legend(ncol=2))) + labs(x = "", y = "") 
+p = p + annotation_custom(ggplotGrob(empty_pie), xmin = 0.01, xmax = 0.016, 
+                          ymin = 0, ymax = 0.3)
+pdf("../figures_11042025/Treemix.pdf", height=6, width=8)
+p
+dev.off()
+```

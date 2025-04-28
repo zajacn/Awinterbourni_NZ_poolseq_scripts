@@ -1,0 +1,1652 @@
+---
+title:  "Fst sliding analysis without Paringa Pool4"
+author: "Natalia Zajac"
+output:
+  html_document: 
+  highlight: pygments
+  theme: sand
+  code_folding: hide
+  toc: yes
+  toc_depth: 4
+  editor_options: 
+  chunk_output_type: inline
+---
+
+Started on `r format(Sys.time(), "%Y-%m-%d %H:%M:%S")`
+
+```{r setup, include=FALSE}
+library(poolfstat)
+library(pheatmap)
+library(dplyr)
+library(cowplot)
+library(patchwork)
+library(readr)
+library(stringr)
+library(tidyverse)
+library(textshaping)
+library(ggVennDiagram)
+library(ComplexHeatmap)
+library(data.table)
+library(ezRun)
+library(scales)
+library(ggpubr)
+library(ggrepel)
+library(enrichplot)
+
+Fst_grendalf = read_delim("../FST/Popoolation2/Sliding_Fst_per_Lake/Fst_sliding.Grendalf.Pi.FET.C2.txt")
+
+df = read_delim("../test.sync") # just for colnames
+poolnames = str_remove(sapply(str_split(colnames(df)[c(-1:-3)], "\\."), .subset, 2), "B-")
+metadata = data.frame(pool = poolnames , lake = sapply(str_split(poolnames, "_"), .subset, 1)) %>% column_to_rownames("pool") %>% mutate(lake = if_else(lake == "Alex", "Alexandrina", lake))
+
+colors = list(lake = setNames(c("orange", "cornflowerblue","gold", "purple", "darkgreen"), unique(metadata$lake)))
+geneAnno = read_delim("../Atriophallophorus_winterbourni/EBI/GCA_013407085.1/Annotation/Genes/genes_annotation_byGene.txt")
+
+genes = data.table(geneAnno[,c(6,8,9)])
+colnames(genes) = c("Chr", "start", "end")
+setkey(genes, Chr, start, end)
+
+snps = Fst_grendalf[,c(1,2,3)] %>% unique() 
+snps = data.table(snps)
+setkey(snps, chrom, start, end)
+obj = foverlaps(snps, genes, by.x = c("chrom", "start", "end"), 
+                by.y = c("Chr", "start", "end"), type = "within", nomatch = 0)
+obj = merge(data.frame(obj), geneAnno[,c(3,6,8,9)], by.x = c("chrom", "start", "end"), by.y = c("seqid", "start", "end"), all.x = TRUE)
+Fst_grendalf = merge(data.frame(Fst_grendalf), obj %>% dplyr::select(-2,-3) , by.x = c("chrom", "start", "end"), by.y = c("chrom", "i.start", "i.end"), all.x = TRUE) %>% replace(is.na(.), "")
+Fst_grendalf$window = paste0(Fst_grendalf$chrom, "-", Fst_grendalf$start, "-", Fst_grendalf$end)
+Fst_grendalf$window_length = Fst_grendalf$end - Fst_grendalf$start
+Fst_grendalf = Fst_grendalf[Fst_grendalf$window_length > 0,]
+
+library(GO.db)
+library(enrichR)
+library(clusterProfiler)
+term2gene = NULL
+term2gene[['BP']] = geneAnno[,c(3,12)] %>% filter(!is.na(`GO BP`)) %>%
+    separate_rows(`GO BP`, sep = "; ") %>%
+    dplyr::rename(Term = `GO BP`, Gene = gene_name) %>% dplyr::select(c(Term,Gene))
+term2gene[['MF']] = geneAnno[,c(3,13)] %>% filter(!is.na(`GO MF`)) %>%
+    separate_rows(`GO MF`, sep = "; ") %>%
+    dplyr::rename(Term = `GO MF`, Gene = gene_name) %>% dplyr::select(c(Term,Gene))
+term2gene[['CC']] = geneAnno[,c(3,14)] %>% filter(!is.na(`GO CC`)) %>%
+    separate_rows(`GO CC`, sep = "; ") %>%
+    dplyr::rename(Term = `GO CC`, Gene = gene_name) %>% dplyr::select(c(Term,Gene))
+
+term2name= NULL
+term2name[["BP"]] = data.frame(Term = term2gene$BP$Term, Name = sapply(term2gene$BP$Term, function(x){Term(x)[[1]]}))
+term2name[["MF"]] = data.frame(Term = term2gene$MF$Term, Name = sapply(term2gene$MF$Term, function(x){Term(x)[[1]]}))
+term2name[["CC"]] = data.frame(Term = term2gene$CC$Term, Name = sapply(term2gene$CC$Term, function(x){Term(x)[[1]]}))
+
+
+library(GSEABase)
+library(tidyverse)
+
+myIds <- term2gene$BP$Term
+myCollection <- GOCollection(myIds)
+fl <- "../Atriophallophorus_winterbourni/EBI/GCA_013407085.1/GO_files/goslim.obo" 
+slim <- getOBOCollection(fl)
+slimdf <- goSlim(myCollection, slim, ontology = "BP")
+GO.db::GOBPOFFSPRING
+mappedIds <-
+  function(df, collection, OFFSPRING)
+  {
+    map <- as.list(OFFSPRING[rownames(df)])
+    mapped <- lapply(map, intersect, ids(collection))
+    df[["go_terms"]] <- vapply(unname(mapped), paste, collapse = ";", character(1L))
+    df
+  }
+slimdf <- mappedIds(slimdf, myCollection, GOBPOFFSPRING)
+slimdf = slimdf %>% rownames_to_column("GOslim") %>% separate_longer_delim(go_terms, delim = ";")
+slimdf = merge(slimdf, term2gene$BP, by.x = "go_terms", by.y = "Term")
+slimdf = slimdf[,c(1,2,5,6)]
+slimdfBP = slimdf[!duplicated(slimdf),] %>% mutate(GO = "BP")
+
+
+myIds <- term2gene$MF$Term
+myCollection <- GOCollection(myIds)
+fl <- "../Atriophallophorus_winterbourni/EBI/GCA_013407085.1/GO_files/goslim.obo" 
+slim <- getOBOCollection(fl)
+slimdf <- goSlim(myCollection, slim, ontology = "MF")
+GO.db::GOMFOFFSPRING
+mappedIds <-
+  function(df, collection, OFFSPRING)
+  {
+    map <- as.list(OFFSPRING[rownames(df)])
+    mapped <- lapply(map, intersect, ids(collection))
+    df[["go_terms"]] <- vapply(unname(mapped), paste, collapse = ";", character(1L))
+    df
+  }
+slimdf <- mappedIds(slimdf, myCollection, GOMFOFFSPRING)
+slimdf = slimdf %>% rownames_to_column("GOslim") %>% separate_longer_delim(go_terms, delim = ";")
+slimdf = merge(slimdf, term2gene$MF, by.x = "go_terms", by.y = "Term")
+slimdf = slimdf[,c(1,2,5,6)]
+slimdfMF = slimdf[!duplicated(slimdf),] %>% mutate(GO = "MF")
+
+myIds <- term2gene$CC$Term
+myCollection <- GOCollection(myIds)
+fl <- "../Atriophallophorus_winterbourni/EBI/GCA_013407085.1/GO_files/goslim.obo" 
+slim <- getOBOCollection(fl)
+slimdf <- goSlim(myCollection, slim, ontology = "CC")
+GO.db::GOCCOFFSPRING
+mappedIds <-
+  function(df, collection, OFFSPRING)
+  {
+    map <- as.list(OFFSPRING[rownames(df)])
+    mapped <- lapply(map, intersect, ids(collection))
+    df[["go_terms"]] <- vapply(unname(mapped), paste, collapse = ";", character(1L))
+    df
+  }
+slimdf <- mappedIds(slimdf, myCollection, GOCCOFFSPRING)
+slimdf = slimdf %>% rownames_to_column("GOslim") %>% separate_longer_delim(go_terms, delim = ";")
+slimdf = merge(slimdf, term2gene$CC, by.x = "go_terms", by.y = "Term")
+slimdf = slimdf[,c(1,2,5,6)]
+slimdfCC = slimdf[!duplicated(slimdf),] %>% mutate(GO = "CC")
+slimdf = rbind(slimdfBP, slimdfMF, slimdfCC)
+
+IC = read.delim("../Atriophallophorus_winterbourni/EBI/GCA_013407085.1/GO_files/Atrio_GO_IC", header = F, sep = " ")
+
+kegg = read.delim("../Gene2Kegg_Awinterbourni.txt",header = F, sep = "\t")
+kegg = kegg[-1,c(1,2,3)]
+term2gene$Kegg = kegg[kegg$V2 != "",c(2,1)]
+colnames(term2gene$Kegg) = c("KO","Gene")
+term2gene$Kegg$Gene = str_remove(term2gene$Kegg$Gene, "-mRNA-1")
+term2name$Kegg = kegg[kegg$V2 != "",c(2,3)]
+colnames(term2name$Kegg) = c("KO", "Name")
+
+
+#Prepare dxy table 
+rc = read.delim("../FST/Popoolation2/combined.filtered.nomasked_rc")
+rc = rc %>% 
+  mutate(across(starts_with("maa"), ~ as.numeric(sapply(str_split(., "/"), .subset,1))/as.numeric(sapply(str_split(., "/"), .subset,2)))) %>% 
+  mutate(across(starts_with("mia"), ~ as.numeric(sapply(str_split(., "/"), .subset,1))/as.numeric(sapply(str_split(., "/"), .subset,2))))
+rc = rc[,c(1:2,26:37,39:41)]
+colnames(rc) = c("chrom", "snp", rownames(metadata)[-13])
+
+#Calculate average allele frequency per each window
+
+windows = Fst_grendalf[,c(1,2,3)]
+windows = unique(windows)
+windows = data.table(windows)
+setkey(windows, chrom, start, end)
+snps = rc[,c(1,2)]
+snps = unique(snps)
+snps = data.table(snps)
+snps[, Pos2 := snp]
+snps$snp = as.numeric(snps$snp)
+snps$Pos2 = as.numeric(snps$Pos2)
+setkey(snps, chrom, snp, Pos2)
+obj = foverlaps(snps, windows, by.x = c("chrom", "snp", "Pos2"), by.y = c("chrom", "start", "end"), type = "within", nomatch = 0)
+rc = merge(rc, data.frame(obj)[,-5], by = c("chrom", "snp"))
+rc = reshape2::melt(rc, id.vars = c("chrom", "snp", "start", "end")) %>% dplyr::mutate(variable = sapply(str_split(variable, "_"), .subset, 1)) %>% group_by(variable, chrom, start, end) %>% dplyr::summarise(mia = mean(value))
+rc = rc %>% mutate(variable = if_else(variable == "Alex", "Alexandrina", variable))
+
+#Calculate dxy per window
+dxy_per_window = NULL
+for (i in unique(Fst_grendalf$label)[c(2:5,7:11,15)]){
+  lake1 = sapply(str_split(i, "_"), .subset, 1)
+  lake2 = sapply(str_split(i, "_"), .subset, 2)
+  lake1df = rc[rc$variable == lake1,-1]
+  colnames(lake1df) = c("chrom", "start", "end", lake1)
+  lake2df = rc[rc$variable == lake2,-1]
+  colnames(lake2df) = c("chrom", "start", "end", lake2)
+  df = merge(lake1df, lake2df, by = c("chrom", "start", "end"))
+  df[["value"]] <- df[[lake1]] * (1 - df[[lake2]]) + df[[lake2]] * (1 - df[[lake1]])
+  df = df[,c(1,2,3,6)]
+  df$variable = i
+  dxy_per_window = rbind(dxy_per_window, df)
+}
+dxy_per_window$window = paste0(dxy_per_window$chrom, "-", dxy_per_window$start, "-", dxy_per_window$end)
+```
+
+
+# {.tabset}
+
+This notebook is for Fst sliding window analysis without Paringa Pool4. This analysis will be bottom up - finding differentiated windows between different comparisons, then identifying genes associated with these windows and then performing GO enrichment analysis on these genes. Eventually the goal is to identify what these functions could be implicated with. The idea came from Fst_sliding_window_part3.
+
+
+## Analysis of outlier SNPs selected with all thresholds {.tabset}
+
+### Each comparison separately
+
+```{r, fig.height=5, fig.width=12}
+
+for (i in unique(Fst_grendalf$label)[c(2:5,7:11,15)]){
+  tb = Fst_grendalf[Fst_grendalf$label == i,]
+  x = list("Grendalf" = tb[tb$MeanGrendalfFst_4sd == "outlier",]$window, 
+           "C2" = tb[tb$C2std_Sig_SNPs > 0,]$window, 
+           "FetMean" = tb[tb$FET_SigMean_SNPs > 0,]$window, 
+           "FetMedian" = tb[tb$FET_SigMedian_SNPs > 0,]$window)
+  tb$color = if_else(tb$window %in% Reduce(intersect, x), "final_outlier", "not_outlier")
+  p1 = ggplot(tb, aes(window, Fst, color = color)) + geom_point() + scale_color_manual(values = c("red", "black")) + theme(axis.text.x = element_blank()) + labs(x = "Position", y = "Average Fst from between pool comparisons") + ggtitle(i)
+  print(p1)
+}
+```
+
+### All comparisons together. 
+
+```{r, fig.height=18, fig.width=16}
+
+for_plots = NULL
+for (i in unique(Fst_grendalf$label)[c(2:5,7:11,15)]){
+  tb = Fst_grendalf[Fst_grendalf$label == i,]
+  x = list("Grendalf" = tb[tb$MeanGrendalfFst_4sd == "outlier",]$window, 
+           "C2" = tb[tb$C2std_Sig_SNPs > 0,]$window, 
+           "FetMean" = tb[tb$FET_SigMean_SNPs > 0,]$window, 
+           "FetMedian" = tb[tb$FET_SigMedian_SNPs > 0,]$window)
+  tb$color = if_else(tb$window %in% Reduce(intersect, x), "final_outlier", "not_outlier")
+  for_plots = rbind(for_plots, tb)
+}
+
+for_plots = for_plots %>% mutate(label2 = case_when(label %in% c("Alexandrina_Paringa", "Alexandrina_Mapourika", "Middleton_Paringa", "Mapourika_Middleton") ~ "West vs East", 
+                                        label %in% c("Alexandrina_Selfe", "Middleton_Selfe") ~ "East vs Selfe", 
+                                        label %in% c("Mapourika_Selfe", "Paringa_Selfe") ~ "West vs Selfe", 
+                                        label == "Alexandrina_Middleton" ~ "East vs East",  label == "Mapourika_Paringa" ~ "West vs West"))
+
+ggplot(for_plots, aes(window, Fst, color = color)) + geom_point() + scale_color_manual(values = c("red", "black")) + theme(axis.text.x = element_blank()) + labs(x = "Position", y = "Average Fst") + facet_wrap(~label, ncol = 1)
+```
+
+### Average Fst vs distance
+
+```{r, fig.height=5, fig.width=7}
+distance = "../tLCP_1400.txt"
+distance = read.delim(distance, sep = " ")
+distance = distance[rownames(distance) %in% unique(metadata$lake),colnames(distance) %in% unique(metadata$lake)] %>% rownames_to_column() %>% melt()
+distance = distance[!duplicated(distance),]
+distance$label = paste0(distance$rowname, "_", distance$variable)
+
+sp <- ggscatter(for_plots %>% group_by(label) %>% summarise(meanFst = mean(Fst)) %>% left_join(distance, by = "label"), x = "value", y = "meanFst",
+                add = "reg.line",  
+                add.params = list(color = "blue", fill = "lightgray"), 
+                conf.int = TRUE 
+) + geom_label_repel(aes(label = label)) + labs(x = "Distance", y = "Mean sliding window Fst")
+# Add correlation coefficient
+sp + stat_cor(method = "pearson", label.x = 50, label.y = 0.075)
+```
+
+### Number of genes
+
+```{r, fig.height=5, fig.width=7}
+for_plots %>% group_by(gene_name, color, label) %>% dplyr::summarise(count = n_distinct(window)) %>% filter(gene_name != "") %>% filter(count >1) %>% group_by(color, label) %>% dplyr::summarise(gene_count = n_distinct(gene_name)) %>% filter(color == "final_outlier") %>% ggplot(aes(gene_count, factor(label, levels = rev(c("Alexandrina_Middleton", "Mapourika_Paringa", "Alexandrina_Paringa", "Alexandrina_Mapourika", "Mapourika_Middleton", "Middleton_Paringa", "Alexandrina_Selfe", "Middleton_Selfe", "Mapourika_Selfe", "Paringa_Selfe"))))) + geom_col()
+
+test = for_plots %>% group_by(gene_name, color, label) %>% dplyr::summarise(count = n_distinct(window)) %>% filter(gene_name != "") %>% filter(count >1) %>% filter(color == "final_outlier")
+list_of_diff_genes = sapply(split( test[,c(1,3)] , f = test$label), function(x){return(x$gene_name)})
+
+ggVennDiagram(list_of_diff_genes)
+```
+
+Ok so that cool, what we could do is do a complimentary approach to the window approach but with gene. Do an upset plot for the genes
+
+### length of windows
+
+```{r, fig.height=5, fig.width=7}
+windows = for_plots[,c(1,2,3,4,5,18,19,20,21)]
+windows$window_length_bins = ezCut(windows$window_length, breaks = seq(500, 5000, 1000))
+
+windows[windows$color == "final_outlier",] %>% group_by(label, window_length_bins) %>% dplyr::summarise(count = n_distinct(window)) %>% ggplot(aes(count, factor(label, levels = rev(c("Alexandrina_Middleton", "Mapourika_Paringa", "Alexandrina_Paringa", "Alexandrina_Mapourika", "Mapourika_Middleton", "Middleton_Paringa", "Alexandrina_Selfe", "Middleton_Selfe", "Mapourika_Selfe", "Paringa_Selfe"))), fill = window_length_bins)) + geom_col(position = "fill") + labs(x = "Proportion", y = "", fill = "Window Length") + scale_fill_manual(values = brewPalette(n = 15))
+```
+
+### Sinlge bar showing all outlier sharing
+
+First check how many genomic regions belong to which category
+
+```{r, fig.height=5, fig.width=7}
+temp = unique(for_plots[,c(4,19,21)]) %>% group_by(window, color) %>% dplyr::summarise(values = paste(label, collapse = ","))
+name = paste(unique(for_plots$label), collapse = ",")
+x1 = temp[temp$values == name & temp$color == "final_outlier",]
+x2 = temp[temp$values == name & temp$color == "not_outlier",]
+x3 = temp[temp$values != name & temp$color == "not_outlier",]
+x4 = temp[temp$values != name & temp$color == "final_outlier",]
+windows = list("all_non_outliers" = x1$window, "all_outliers" = x2$window, "not_all_outliers" = x4$window, "not_all_not_outliers" = x3$window)
+
+ggVennDiagram(windows)
+```
+
+
+```{r, fig.height=5, fig.width=11}
+x1 = x1 %>% group_by(color, values) %>% dplyr::summarise(window_count = n_distinct(window))
+x1$values = "All comparisons"
+x2 = x2 %>% group_by(color, values) %>% dplyr::summarise(window_count = n_distinct(window))
+x2$values = "All comparisons"
+x4 = x4 %>% group_by(color, values) %>% dplyr::summarise(window_count = n_distinct(window))
+x4 = x4 %>% mutate(values = if_else(values %in% c("Alexandrina_Middleton", "Alexandrina_Mapourika", "Alexandrina_Paringa", "Alexandrina_Selfe",
+                                     "Mapourika_Paringa", "Mapourika_Middleton", "Mapourika_Selfe",
+                                     "Middleton_Paringa", "Middleton_Selfe",
+                                     "Paringa_Selfe",
+                                     "Mapourika_Selfe,Paringa_Selfe",
+                                     "Alexandrina_Selfe,Middleton_Selfe",
+                                     "Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Middleton_Paringa",
+                                     "Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Mapourika_Selfe,Paringa_Selfe,Middleton_Paringa",
+                                     "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Middleton_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Paringa,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa","Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Selfe,Middleton_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Paringa,Mapourika_Selfe,Middleton_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Selfe,Paringa_Selfe,Middleton_Paringa","Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Alexandrina_Middleton,Mapourika_Middleton,Mapourika_Selfe,Paringa_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Mapourika_Selfe,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa","Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Middleton,Mapourika_Middleton,Mapourika_Selfe,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa"), values, "Other"))
+finalx = rbind(x1, x2, x4)
+finalx = finalx %>% mutate(comparison = case_when(values %in%  c("Alexandrina_Selfe,Middleton_Selfe", "Alexandrina_Selfe", "Middleton_Selfe") ~ "East vs Selfe",
+                                                  values %in% c("Mapourika_Selfe,Paringa_Selfe", "Mapourika_Selfe", "Paringa_Selfe") ~ "West vs Selfe",
+                                                  values == "Alexandrina_Middleton" ~ "East vs East",
+                                                  values == "Mapourika_Paringa" ~ "West vs West",
+                                                  values == "Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Middleton_Paringa" ~ "Introgressing to Selfe from both",
+                                                  values == "Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Mapourika_Selfe,Paringa_Selfe,Middleton_Paringa" ~ "Introgressing to Selfe from East",
+                                                  values == "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Middleton_Selfe,Middleton_Paringa" ~ "Introgressing to Selfe from West", 
+                                                  values %in%  c("Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Paringa,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa") ~ "Introgressing into Selfe from Mapourika",
+                                                  values %in%  c("Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Selfe,Middleton_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Paringa,Mapourika_Selfe,Middleton_Selfe,Middleton_Paringa") ~ "Introgressing into Selfe from Paringa", 
+                                                  values %in% c("Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Selfe,Paringa_Selfe,Middleton_Paringa","Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Alexandrina_Middleton,Mapourika_Middleton,Mapourika_Selfe,Paringa_Selfe,Middleton_Paringa") ~ "Introgressing into Selfe from Middleton", 
+                                                  values %in% c("Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Mapourika_Selfe,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa","Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Middleton,Mapourika_Middleton,Mapourika_Selfe,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa") ~ "Introgressing into Selfe from Alexandrina", .default = values))
+
+finalx$color = if_else(finalx$color == "final_outlier", "Differentiated", "Undifferentiated")
+finalx$comparison = paste0(finalx$comparison, " -- ", finalx$color)
+finalx$comparison = factor(finalx$comparison, levels = c("All comparisons -- Undifferentiated", "All comparisons -- Differentiated", "Alexandrina_Mapourika -- Differentiated", "Alexandrina_Paringa -- Differentiated", "Mapourika_Middleton -- Differentiated", "Middleton_Paringa -- Differentiated", "East vs East -- Differentiated", "West vs West -- Differentiated", "East vs Selfe -- Differentiated", "West vs Selfe -- Differentiated", "Introgressing into Selfe from Paringa -- Differentiated","Introgressing into Selfe from Mapourika -- Differentiated", "Introgressing into Selfe from Alexandrina -- Differentiated", "Introgressing into Selfe from Middleton -- Differentiated", "Introgressing to Selfe from West -- Differentiated", "Introgressing to Selfe from East -- Differentiated", "Introgressing to Selfe from both -- Differentiated","Other -- Differentiated"))
+
+ggplot() +
+  geom_col(data = finalx[finalx$values != "All comparisons",], aes(x = window_count, y = "1", fill = comparison), position = "fill") + 
+  geom_col(data = finalx, aes(x = window_count, y = "2", fill = comparison), position = "fill") +
+  scale_fill_manual(values = c("darkgrey", "black", brewPalette(n = 22)[1:12], "darkcyan", "plum", "darkorange", brewPalette(n = 22)[16]), breaks=c("All comparisons -- Undifferentiated", "All comparisons -- Differentiated", "Alexandrina_Mapourika -- Differentiated", "Alexandrina_Paringa -- Differentiated", "Mapourika_Middleton -- Differentiated", "Middleton_Paringa -- Differentiated", "East vs East -- Differentiated", "West vs West -- Differentiated", "East vs Selfe -- Differentiated", "West vs Selfe -- Differentiated", "Introgressing into Selfe from Paringa -- Differentiated","Introgressing into Selfe from Mapourika -- Differentiated", "Introgressing into Selfe from Alexandrina -- Differentiated", "Introgressing into Selfe from Middleton -- Differentiated", "Introgressing to Selfe from West -- Differentiated", "Introgressing to Selfe from East -- Differentiated", "Introgressing to Selfe from both -- Differentiated","Other -- Differentiated")) + labs(y = "", x = "proportion of the genome") + theme_bw() + theme(axis.ticks.y = element_blank(), axis.text.y=element_blank())
+
+```
+
+Fst of those categories
+
+```{r, fig.height=5, fig.width=9}
+temp = unique(for_plots[,c(4,19,21)]) %>% group_by(window, color) %>% dplyr::summarise(values = paste(label, collapse = ","))
+name = paste(unique(for_plots$label), collapse = ",")
+x4 = temp[temp$values != name & temp$color == "final_outlier",]
+
+x4 = x4 %>% mutate(values = if_else(values %in% c("Alexandrina_Middleton", "Alexandrina_Mapourika", "Alexandrina_Paringa", "Alexandrina_Selfe",
+                                     "Mapourika_Paringa", "Mapourika_Middleton", "Mapourika_Selfe",
+                                     "Middleton_Paringa", "Middleton_Selfe",
+                                     "Paringa_Selfe",
+                                     "Mapourika_Selfe,Paringa_Selfe",
+                                     "Alexandrina_Selfe,Middleton_Selfe",
+                                     "Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Middleton_Paringa",
+                                     "Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Mapourika_Selfe,Paringa_Selfe,Middleton_Paringa",
+                                     "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Middleton_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Paringa,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa","Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Selfe,Middleton_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Paringa,Mapourika_Selfe,Middleton_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Selfe,Paringa_Selfe,Middleton_Paringa","Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Alexandrina_Middleton,Mapourika_Middleton,Mapourika_Selfe,Paringa_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Mapourika_Selfe,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa","Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Middleton,Mapourika_Middleton,Mapourika_Selfe,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa"), values, "Other"))
+
+x4 = x4 %>% mutate(comparison = case_when(values %in%  c("Alexandrina_Selfe,Middleton_Selfe", "Alexandrina_Selfe", "Middleton_Selfe") ~ "East vs Selfe",
+                                                  values %in% c("Mapourika_Selfe,Paringa_Selfe", "Mapourika_Selfe", "Paringa_Selfe") ~ "West vs Selfe",
+                                                  values == "Alexandrina_Middleton" ~ "East vs East",
+                                                  values == "Mapourika_Paringa" ~ "West vs West",
+                                                  values == "Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Middleton_Paringa" ~ "Introgressing to Selfe from both",
+                                                  values == "Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Mapourika_Selfe,Paringa_Selfe,Middleton_Paringa" ~ "Introgressing to Selfe from East",
+                                                  values == "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Middleton_Selfe,Middleton_Paringa" ~ "Introgressing to Selfe from West", 
+                                                  values %in%  c("Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Paringa,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa") ~ "Introgressing into Selfe from Mapourika",
+                                                  values %in%  c("Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Selfe,Middleton_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Paringa,Mapourika_Selfe,Middleton_Selfe,Middleton_Paringa") ~ "Introgressing into Selfe from Paringa", 
+                                                  values %in% c("Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Selfe,Paringa_Selfe,Middleton_Paringa","Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Alexandrina_Middleton,Mapourika_Middleton,Mapourika_Selfe,Paringa_Selfe,Middleton_Paringa") ~ "Introgressing into Selfe from Middleton", 
+                                                  values %in% c("Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Mapourika_Selfe,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa","Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Middleton,Mapourika_Middleton,Mapourika_Selfe,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa") ~ "Introgressing into Selfe from Alexandrina", .default = values))
+
+x4 = merge(for_plots[,c(4,5,19)], x4, by = "window")
+x4$comparison = factor(x4$comparison, levels = c("Alexandrina_Mapourika", "Alexandrina_Paringa", "Mapourika_Middleton", "Middleton_Paringa", "East vs East", "West vs West", "East vs Selfe", "West vs Selfe", "Introgressing into Selfe from Paringa","Introgressing into Selfe from Mapourika", "Introgressing into Selfe from Alexandrina", "Introgressing into Selfe from Middleton", "Introgressing to Selfe from West", "Introgressing to Selfe from East", "Introgressing to Selfe from both","Other"))
+
+x4$label = factor(x4$label, levels = c("Alexandrina_Middleton", "Alexandrina_Selfe", "Middleton_Selfe", "Alexandrina_Paringa", "Alexandrina_Mapourika", "Mapourika_Middleton", "Middleton_Paringa", "Mapourika_Selfe", "Paringa_Selfe","Mapourika_Paringa"))
+
+x4 %>% ggplot(aes(label, Fst, fill = comparison)) + geom_boxplot(outliers = F)  + scale_fill_manual(values = c(brewPalette(n = 22)[1:12], "darkcyan", "plum", "darkorange", brewPalette(n = 22)[16])) + theme(axis.text.x = element_text(size = 11, angle = 45, hjust = 1, vjust = 1), plot.margin = margin(10, 10, 10, 50))
+
+```
+
+
+Fst of outliers and nonoutliers
+
+```{r, fig.height=5, fig.width=9}
+temp = for_plots
+temp$label = factor(temp$label, levels = rev(c("Alexandrina_Middleton", "Mapourika_Paringa", "Alexandrina_Paringa", "Alexandrina_Mapourika", "Mapourika_Middleton", "Middleton_Paringa", "Alexandrina_Selfe", "Middleton_Selfe", "Mapourika_Selfe", "Paringa_Selfe")))
+
+p1 = ggplot(temp[temp$color == "final_outlier",], aes(Fst, label, fill = "allthesame")) + geom_boxplot(outliers = F) + theme_classic() + geom_vline(xintercept = 0.2, color = "red", linetype = "dashed") + scale_fill_manual(values = "grey") + theme(legend.position = "") + labs(x = "Fst of Differentiated Regions") +  theme(axis.ticks.y = element_blank(), axis.text.y=element_blank(), axis.title.y = element_blank())
+p2 = ggplot(temp[temp$color == "not_outlier",], aes(Fst, label, fill = "allthesame")) + geom_boxplot(outliers = F) + theme_classic() + geom_vline(xintercept = 0.05, color = "red", linetype = "dashed") + scale_fill_manual(values = "grey") + theme(legend.position = "", axis.title.y = element_blank(),axis.ticks.y = element_blank(), axis.text.y=element_blank()) + labs(x = "Fst of Undifferentiated Regions") 
+p3 = temp[temp$color == "final_outlier",] %>% group_by(label) %>% dplyr::summarise(count = n_distinct(window)) %>% mutate(col = rev(c("white", "white", rep("black",4), rep("grey", 4)))) %>% ggplot(aes(count, label, fill = col)) + geom_col(color = "black") + scale_x_reverse() + scale_y_discrete(position = "right") + theme_minimal() + theme(axis.title.y = element_blank(), panel.grid = element_blank(), axis.line.x.bottom = element_line(colour = "black"), legend.position = "") + labs(x = "Outliers per Lake") + scale_fill_manual(values = c("black", "grey", "white"))
+pdf("../Figures/FstOutandNonOut.pdf", height = 5, width = 10)
+p3 + p2 + p1
+dev.off()
+```
+
+
+Lets try different categories and combine the Fst and bar plot charts
+
+```{r, fig.height=5, fig.width=11}
+library(ggpp)
+temp = unique(for_plots[,c(4,19,21)]) %>% group_by(window, color) %>% dplyr::summarise(values = paste(label, collapse = ","))
+name = paste(unique(for_plots$label), collapse = ",")
+x1 = temp[temp$values == name & temp$color == "final_outlier",] %>% mutate(category1 = "All comparisons differentiated", West_vs_East = "")
+x2 = temp[temp$values == name & temp$color == "not_outlier",] %>% mutate(category1 = "All comparisons undifferentiated", West_vs_East = "")
+x3 = temp[temp$values != name & temp$color == "not_outlier",] %>% mutate(category1 = "All comparisons", West_vs_East = "")
+x4 = temp[temp$values != name & temp$color == "final_outlier",]
+
+required_west_vs_east <- c("Alexandrina_Paringa", "Alexandrina_Mapourika", "Mapourika_Middleton", "Middleton_Paringa")
+
+x4 = x4 %>%
+    rowwise() %>% 
+    mutate(
+        # Split the `values` into individual lake pairs
+        value_list = str_split(values, ","),
+        # Check if all required elements are present in the value_list
+        category1 = dplyr::case_when(
+            all(required_west_vs_east %in% unlist(value_list)) ~ "West vs East",
+            values == "Alexandrina_Selfe,Mapourika_Selfe,Middleton_Selfe,Paringa_Selfe" ~ "Selfe vs all",
+            values == "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Alexandrina_Middleton" ~ "Alexandrina vs all",
+            values == "Alexandrina_Middleton,Mapourika_Middleton,Middleton_Selfe,Middleton_Paringa" ~ "Middleton vs all",
+            values == "Alexandrina_Mapourika,Mapourika_Middleton,Mapourika_Paringa,Mapourika_Selfe" ~ "Mapourika vs all",
+            values == "Alexandrina_Paringa,Mapourika_Paringa,Paringa_Selfe,Middleton_Paringa" ~ "Paringa vs all",
+            values == "Alexandrina_Middleton" ~ "East vs East",
+            values == "Mapourika_Paringa" ~ "West vs West",
+            values %in% c("Alexandrina_Mapourika", "Alexandrina_Paringa", "Alexandrina_Selfe", 
+                          "Mapourika_Middleton", "Mapourika_Selfe", "Middleton_Paringa", 
+                          "Middleton_Selfe", "Paringa_Selfe") ~ "Two-lake-specific",
+            values == "Alexandrina_Selfe,Middleton_Selfe" ~ "Selfe vs East",
+            values == "Mapourika_Selfe,Paringa_Selfe" ~ "Selfe vs West",
+            TRUE ~ "Other"
+        ), West_vs_East = dplyr::case_when(
+      values == "Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Middleton_Paringa" ~ "Introgressing to Selfe from both",
+      values == "Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Mapourika_Selfe,Paringa_Selfe,Middleton_Paringa" ~ "Introgressing to Selfe from East",
+      values == "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Middleton_Selfe,Middleton_Paringa" ~ "Introgressing to Selfe from West",
+      values %in%  c("Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Paringa,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa") ~ "Introgressing into Selfe from Mapourika",
+      values %in%  c("Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Selfe,Middleton_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Paringa,Mapourika_Selfe,Middleton_Selfe,Middleton_Paringa") ~ "Introgressing into Selfe from Paringa", 
+      values %in% c("Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Selfe,Paringa_Selfe,Middleton_Paringa","Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Alexandrina_Middleton,Mapourika_Middleton,Mapourika_Selfe,Paringa_Selfe,Middleton_Paringa") ~ "Introgressing into Selfe from Middleton",
+      values %in% c("Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Mapourika_Selfe,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa","Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Middleton,Mapourika_Middleton,Mapourika_Selfe,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa") ~ "Introgressing into Selfe from Alexandrina",
+      .default = ""))
+x4 = x4[,c(-2,-4)]
+
+temp2 = merge(unique(for_plots[,c(4,5,19,21)]), x4, by = c("window"))
+temp3 = merge(unique(for_plots[,c(4,5,19,21)]), x1, by = c("window","color"))
+temp4 = merge(unique(for_plots[,c(4,5,19,21)]), x2, by = c("window","color"))
+
+temp3 = rbind(temp2,temp3,temp4)
+
+temp3$category1 = factor(temp3$category1, levels = c("All comparisons undifferentiated", "All comparisons differentiated","Alexandrina vs all", "Middleton vs all", "Selfe vs all", "Mapourika vs all", "Paringa vs all", "Two-lake-specific", "Selfe vs East", "Selfe vs West", "East vs East",  "West vs West", "West vs East", "Other"))
+temp3$West_vs_East = factor(temp3$West_vs_East, levels = c("Introgressing into Selfe from Alexandrina", "Introgressing into Selfe from Middleton", "Introgressing into Selfe from Paringa", "Introgressing into Selfe from Mapourika", "Introgressing to Selfe from East", "Introgressing to Selfe from West", "Introgressing to Selfe from both", ""))
+
+temp3$window_length = as.numeric(sapply(str_split(temp3$window, "-"), .subset,3)) - as.numeric(sapply(str_split(temp3$window, "-"), .subset,2))
+
+p1 = temp3 %>% distinct(category1, window, window_length) %>%
+         group_by(category1) %>% 
+         dplyr::summarise(window_count = n_distinct(window), length = sum(window_length)) %>% mutate(perc = (length * 100)/sum(length)) %>% mutate(perc = if_else(perc > 10, paste0(as.character(round(perc,0)),"%"), "")) %>% 
+    ggplot(aes(x = "", y = window_count, fill = category1)) + geom_bar(stat = "identity", width = 1) + 
+    coord_polar(theta = "y", start = pi/2.3) +
+    labs(y = "", x = "", fill = "Comparison") +
+    theme_bw() +
+    theme(axis.ticks = element_blank(), 
+          axis.text = element_blank(), 
+          panel.grid = element_blank(), 
+          panel.border = element_blank(),legend.text = element_text(size = 14)) + scale_fill_manual(values = c("azure4", "#3385BBFF", "#84BF96FF", "#6DBD57FF" ,"#7F9D55FF","#F57C7CFF" ,"#E42622FF" ,"#C2AAC2FF", "#DE9E83FF", "#9D7BBAFF" ,"#886F4C" ,"#F3E587FF", "#0086ED","#D157A0")) +
+    geom_label_repel(aes(label = perc), max.overlaps = 30, size = 9, show.legend = FALSE) 
+
+p2 = temp3 %>% 
+    filter(category1 != "All comparisons differentiated" & category1 != "All comparisons undifferentiated") %>% distinct(category1, window, window_length) %>% 
+    group_by(category1) %>% 
+    dplyr::summarise(window_count = n_distinct(window), length = sum(window_length)) %>% mutate(perc = (length*100)/173173889) %>% mutate(perc = if_else(perc > 0.5, paste0(as.character(round(perc,1)),"%"), "")) %>% 
+    ggplot(aes(x = "", y = window_count, fill = category1)) + geom_bar(stat = "identity", width = 1) + 
+    coord_polar(theta = "y", start = 5.4) +
+    labs(y = "", x = "", fill = "Comparison") +
+    theme_bw() +
+    theme(axis.ticks = element_blank(), 
+          axis.text = element_blank(), 
+          panel.grid = element_blank(), 
+          panel.border = element_blank(), legend.position = "", legend.text = element_text(size = 14)) + scale_fill_manual(values = c("#84BF96FF", "#6DBD57FF" ,"#7F9D55FF","#F57C7CFF" ,"#E42622FF" ,"#C2AAC2FF", "#DE9E83FF", "#9D7BBAFF" ,"#886F4C" ,"#F3E587FF", "#0086ED","#D157A0")) +
+    geom_label_repel(aes(label = perc), position = position_stacknudge(vjust = 0.5, x = 0.8), max.overlaps = 30, size = 9, show.legend = FALSE, color = "white")
+
+p3 = temp3 %>% filter(category1 == "West vs East") %>% mutate(West_vs_East = if_else(West_vs_East != "", West_vs_East, "West vs East Other")) %>% distinct(West_vs_East, window, window_length) %>% group_by(West_vs_East) %>% dplyr::summarise(window_count = n_distinct(window), length = sum(window_length))  %>% mutate(perc = (length*100)/173173889) %>% mutate(perc = if_else(perc > 0.05, paste0(as.character(round(perc,2)),"%"), "")) %>% ggplot(aes(x = "", y = window_count, fill = West_vs_East)) + geom_bar(stat = "identity", width = 1,color = "#0086ED") +
+    coord_polar(theta = "y") +
+    labs(y = "", x = "", fill = "West vs East") +
+    theme_bw() +
+    theme(axis.ticks = element_blank(), 
+          axis.text = element_blank(), 
+          panel.grid = element_blank(), 
+          panel.border = element_blank(), legend.text = element_text(size = 14)) + scale_fill_manual(values = c("#74D055FF" ,"#94D840FF" ,"#B8DE29FF", "#DCE318FF", "darkorange", "plum", "darkcyan", "#A6CEE3FF")) +
+    geom_label_repel(aes(label = perc), position = position_stacknudge(vjust = 0.5, x = 0.8), max.overlaps = 30, size = 9, show.legend = FALSE, color = "white")
+
+
+p = p1 + p2 + p3 +
+    plot_layout(guides = 'collect')
+
+for_fst = temp3 %>% 
+  mutate(label2 = case_when(label %in% c("Alexandrina_Paringa", "Alexandrina_Mapourika", "Middleton_Paringa", "Mapourika_Middleton") ~ "West vs East", 
+                            label %in% c("Alexandrina_Selfe", "Middleton_Selfe") ~ "East vs Selfe", 
+                            label %in% c("Mapourika_Selfe", "Paringa_Selfe") ~ "West vs Selfe", 
+                            label == "Alexandrina_Middleton" ~ "East vs East",  label == "Mapourika_Paringa" ~ "West vs West"),
+         Comparison = if_else(
+           (category1 == "West vs East" & West_vs_East %in% c("", "Introgressing into Selfe from Alexandrina", "Introgressing into Selfe from Middleton", "Introgressing into Selfe from Paringa", "Introgressing into Selfe from Mapourika", "Introgressing to Selfe from East", "Introgressing to Selfe from West", "Introgressing to Selfe from both")), paste(category1,West_vs_East), category1)) 
+for_fst$Comparison = factor(for_fst$Comparison, levels = c("All comparisons undifferentiated", "All comparisons differentiated","Alexandrina vs all", "Middleton vs all", "Selfe vs all", "Mapourika vs all", "Paringa vs all", "Two-lake-specific", "Selfe vs East", "Selfe vs West", "East vs East",  "West vs West", "West vs East ", "West vs East Introgressing into Selfe from Alexandrina", "West vs East Introgressing into Selfe from Middleton", "West vs East Introgressing into Selfe from Paringa", "West vs East Introgressing into Selfe from Mapourika", "West vs East Introgressing to Selfe from East", "West vs East Introgressing to Selfe from West", "West vs East Introgressing to Selfe from both", "Other"))
+
+
+p4 = for_fst %>% 
+    ggplot(aes(label2, Fst, fill = Comparison)) + 
+    geom_boxplot(outliers = F)  + 
+    scale_fill_manual(values = c("azure4", "#3385BBFF", "#84BF96FF", "#6DBD57FF" ,"#7F9D55FF","#F57C7CFF" ,"#E42622FF" ,"#C2AAC2FF", "#DE9E83FF", "#9D7BBAFF" ,"#886F4C" ,"#F3E587FF",  "#A6CEE3FF", "#74D055FF" ,"#B8DE29FF","#DCE318FF","#94D840FF", "plum", "darkcyan","darkorange", "#D157A0")) + theme(axis.text.x = element_text(size = 13, angle = 45, hjust = 1, vjust = 1), plot.margin = margin(10, 10, 10, 50), axis.text.y = element_text(size = 11),legend.text = element_text(size = 11)) + labs(x = "") + guides(fill=guide_legend(ncol=1)) + ylab(expression(F[ST])) 
+
+pdf("../Figures/Whole_genome_subdivided.pdf", width = 18, height = 8)
+p
+dev.off()
+
+pdf("../Figures/Whole_genome_subdivided_FST.pdf", width = 16, height = 6)
+p4
+dev.off()
+```
+
+Manhattan plot
+
+```{r, fig.height=8, fig.width=10}
+xxx = for_plots %>% mutate(east = case_when(
+  window %in% temp3[temp3$West_vs_East == "Introgressing to Selfe from West",]$window ~ "Introgressing from West", 
+  window %in% temp3[temp3$West_vs_East == "Introgressing to Selfe from East",]$window ~ "Introgressing from East", 
+  window %in% temp3[temp3$West_vs_East == "Introgressing to Selfe from both",]$window ~ "Introgressing from both", 
+  window %in% temp3[temp3$West_vs_East == "Introgressing into Selfe from Paringa",]$window ~ "Introgressing from Paringa", 
+  window %in% temp3[temp3$West_vs_East == "Introgressing into Selfe from Middleton",]$window ~ "Introgressing from Middleton", 
+  window %in% temp3[temp3$West_vs_East == "Introgressing into Selfe from Mapourika",]$window ~ "Introgressing from Mapourika", 
+  window %in% temp3[temp3$West_vs_East == "Introgressing into Selfe from Alexandrina",]$window ~ "Introgressing from Alexandrina", 
+  window %in% temp3[temp3$West_vs_East == "" & temp3$category1 == "West vs East",]$window ~ "West vs East other",
+  .default = "Rest")) %>% 
+  filter(label %in% c("Alexandrina_Selfe", "Middleton_Selfe")) %>% arrange(chrom,start, end)
+
+xxx$east = factor(xxx$east, levels = c("Introgressing from Alexandrina", "Introgressing from Middleton", "Introgressing from Paringa", "Introgressing from Mapourika", "Introgressing from East" ,"Introgressing from West", "Introgressing from both", "West vs East other", "Rest"))
+
+pdf("../Figures/Manhattan_WestvsEast_EasttoSelfe.pdf", height = 5, width = 15)
+
+ggplot(xxx,aes(window,Fst)) + 
+  geom_point(data = xxx[xxx$east == "Rest",], aes(window,Fst), color = "grey") + 
+  geom_point(data = xxx[xxx$east == "Introgressing from Alexandrina",], aes(window,Fst, color = east), size = 3) + 
+  geom_point(data = xxx[xxx$east == "Introgressing from Middleton",], aes(window,Fst, color = east), size = 3) + 
+  geom_point(data = xxx[xxx$east == "Introgressing from Paringa",], aes(window,Fst, color = east), size = 3) +
+  geom_point(data = xxx[xxx$east == "Introgressing from Mapourika",], aes(window,Fst, color = east), size = 3) +
+  geom_point(data = xxx[xxx$east == "West vs East other",], aes(window,Fst, color = east), size = 3) + 
+  geom_point(data = xxx[xxx$east == "Introgressing from East",], aes(window,Fst, color = east), size = 3) +
+  geom_point(data = xxx[xxx$east == "Introgressing from both",], aes(window,Fst, color = east), size = 3)  + 
+  geom_point(data = xxx[xxx$east == "Introgressing from West",], aes(window,Fst, color = east), size = 3) + 
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) + 
+  facet_wrap(~label, ncol = 1) + scale_color_manual(values = c("#74D055FF" ,"#94D840FF" ,"#B8DE29FF", "#DCE318FF", "#A6CEE3FF","plum","darkorange","darkcyan")) + 
+  labs(color = "West vs East into Selfe", y = "FST", x = "window") + 
+  theme(axis.title.y = element_text(size = 15), strip.text = element_text(size = 15), axis.title.x =  element_text(size = 15))
+
+dev.off()
+```
+
+
+Now a Sankey plot using count
+
+```{r, fig.height=5, fig.width=11}
+library(ggsankey)
+df = unique(temp3[,c(1,6,7)]) %>% mutate(col1 = if_else(category1 %in% c("All comparisons undifferentiated", "All comparisons differentiated"), category1, "Other outliers"), col2 = if_else(category1 %in% c("All comparisons undifferentiated", "All comparisons differentiated"), "", category1))
+df = df %>%
+    count(col1, col2, West_vs_East) %>%
+    group_by(col1) %>%
+    mutate(count = n) %>%
+    ungroup()
+data_long <- df %>%
+    make_long(col1, col2, West_vs_East, value = count)
+data_long = data_long[!(data_long$x == "col2" & data_long$node == ""),]
+df = data_long[!(data_long$x == "West_vs_East" & data_long$node == ""),]
+ggplot(df, aes(
+    x = x, 
+    next_x = next_x, 
+    node = node, 
+    next_node = next_node, 
+    value = value, 
+    fill = node
+)) +
+    geom_sankey(flow.alpha = 0.7, node.color = "black", linewidth = 0.5) +  # Updated to use linewidth
+    geom_sankey_label(aes(label = node), size = 3, color = "white") +       # Fix: Map label aesthetic to `node`
+    theme_sankey(base_size = 14) +
+    scale_fill_viridis_d() +  # Optional color palette
+    labs(
+        title = "Sankey Plot of Categories",
+        x = "Category Levels",
+        y = "Count"
+    ) +
+    theme(legend.position = "none")
+```
+
+
+## Selecting SNP outliers {.tabset}
+
+### West vs East
+
+```{r, fig.height=6, fig.width=12}
+list_of_outliers = NULL
+for (i in unique(for_plots$label)){
+  tb = for_plots[for_plots$label == i & for_plots$color == "final_outlier",]
+  tb = tb$window
+  list_of_outliers[[i]] = tb
+}
+
+p1 = ggVennDiagram(list_of_outliers[c(1,2,4,5,6,10)], force_upset = T)
+p1 
+```
+
+Upset plot of regions differentiated between West and East 
+
+```{r, fig.height=5, fig.width=9}
+m1 = make_comb_mat(list_of_outliers[c(1,2,5,10,3,4,6,7,8,9)])
+m1 = m1[grepl("^1111", comb_name(m1))]
+m1 = m1[comb_size(m1) >= 5]
+m1 = m1[c(5,8,9,10,12,13,15:20)] #c("black", "black", "black", "black", "black", "red", "red", "black", "black", "black", "black", "red")
+m1 = m1[c(6,7,12)]
+ss = set_size(m1)
+cs = comb_size(m1)
+Fst = lapply(set_name(m1), function(ind) for_plots[for_plots$label == ind,]$Fst)
+subgroup = unique(for_plots[,c(4,22)]) %>% rownames_to_column() %>% column_to_rownames("label") %>% dplyr::select(label2)
+Fst_out = lapply(set_name(m1), function(ind) for_plots[for_plots$label == ind & for_plots$color == "final_outlier",]$Fst)
+
+pdf("../Figures/UpsetWestvsEastIntrogressSelfe.pdf", height=5, width=9)
+ht = UpSet(m1, 
+           set_order = c("Alexandrina_Middleton", "Mapourika_Paringa", "Alexandrina_Paringa", "Alexandrina_Mapourika", "Mapourika_Middleton", "Middleton_Paringa", "Alexandrina_Selfe", "Middleton_Selfe", "Mapourika_Selfe", "Paringa_Selfe"),
+           comb_order = order(-cs),
+           top_annotation = HeatmapAnnotation(
+               "Outlier Intersections" = anno_barplot(cs, 
+                                                      ylim = c(0, max(cs)*1.1),
+                                                      border = FALSE, 
+                                                      gp = gpar(fill = c("darkcyan", "plum", "darkorange"), fontsize = 20), 
+                                                      height = unit(4, "cm")
+               ), 
+               annotation_name_side = "left", 
+               annotation_name_rot = 90),
+           left_annotation = rowAnnotation(
+               "Outliers per Lake" = anno_barplot(-ss, 
+                                                  baseline = 0,
+                                                  axis_param = list(
+                                                      at = c(0, -500, -1000, -1500),
+                                                      labels = c(0, 500, 1000, 1500),
+                                                      labels_rot = 0),
+                                                  border = FALSE, 
+                                                  gp = gpar(fill = c("black", "black", "black", "black", "lightgrey", "white", "white", "lightgrey", "lightgrey", "lightgrey")),
+                                                  width = unit(4, "cm")
+               ),
+               set_name = anno_text(set_name(m1),
+                                    location = 1, 
+                                    just = "right",gp = gpar(fontsize = 10),
+                                    width = max_text_width(set_name(m1)) + 
+                                        unit(2, "mm"))), 
+           right_annotation = rowAnnotation("Fst sliding window" = anno_boxplot(Fst,width = unit(4, "cm"), outline = F),
+                                            "Fst of outliers only" = anno_boxplot(Fst_out,width = unit(4, "cm"), outline = F),
+                                            gap = unit(4, "mm")),
+           show_row_names = FALSE)
+
+ht = draw(ht)
+od = column_order(ht)
+
+decorate_annotation("Outlier Intersections", {
+    grid.text(cs[od], x = seq_along(cs), y = unit(cs[od], "native") + unit(2, "pt"), 
+              default.units = "native", just = c("left", "bottom"), 
+              gp = gpar(fontsize = 6, col = "#404040"), rot = 45)
+})
+
+decorate_annotation("Fst sliding window", {
+    grid.lines(c(0.05, 0.05), c(0.5, 10.5), gp = gpar(lty = 3, col = "red"),
+               default.units = "native")
+})
+decorate_annotation("Fst of outliers only", {
+    grid.lines(c(0.2, 0.2), c(0.5, 10.5), gp = gpar(lty = 3, col = "red"),
+               default.units = "native")
+})
+dev.off()
+#labelling intersections:c("plum", "plum", "plum", "plum", "yellowgreen", "darkorange", "darkslateblue", "darkcyan", "yellowgreen", "darkcyan")
+```
+
+
+### Per lake
+
+```{r, fig.height=10, fig.width=20}
+
+p1 = ggVennDiagram(list_of_outliers[grepl("Alexandrina", names(list_of_outliers))]) +coord_cartesian(clip="off") +
+  ggplot2::scale_fill_gradient(low="blue",high = "yellow") + scale_x_continuous(expand = expansion(mult = .4))
+p2 = ggVennDiagram(list_of_outliers[grepl("Middleton", names(list_of_outliers))]) +coord_cartesian(clip="off") +
+  ggplot2::scale_fill_gradient(low="blue",high = "yellow") + scale_x_continuous(expand = expansion(mult = .4))
+p3 = ggVennDiagram(list_of_outliers[grepl("Mapourika", names(list_of_outliers))]) +coord_cartesian(clip="off") +
+  ggplot2::scale_fill_gradient(low="blue",high = "yellow") + scale_x_continuous(expand = expansion(mult = .4))
+p4 = ggVennDiagram(list_of_outliers[grepl("Paringa", names(list_of_outliers))]) +coord_cartesian(clip="off") +
+  ggplot2::scale_fill_gradient(low="blue",high = "yellow") + scale_x_continuous(expand = expansion(mult = .4))
+#p5 = ggVennDiagram(list_of_outliers[grepl("Selfe", names(list_of_outliers))], palette = "Reds")
+
+plot_grid(p1, p2, p3, p4, ncol = 2)
+```
+
+### Per region
+
+```{r, fig.height=8, fig.width=25}
+
+p1 = ggVennDiagram(list_of_outliers[c(1:5,8,10)]) +coord_cartesian(clip="off") +
+  ggplot2::scale_fill_gradient(low="blue",high = "yellow") + scale_x_continuous(expand = expansion(mult = .4))
+p2 = ggVennDiagram(list_of_outliers[c(1,2,5,6,7,9,10)]) +coord_cartesian(clip="off") +
+  ggplot2::scale_fill_gradient(low="blue",high = "yellow") + scale_x_continuous(expand = expansion(mult = .4))
+
+plot_grid(p1, p2, ncol = 2)
+```
+
+
+```{r, sets_of_snps_of_intest, include=FALSE}
+
+West_East_outliers = setdiff(setdiff(intersect(intersect(intersect(list_of_outliers$Alexandrina_Paringa, list_of_outliers$Alexandrina_Mapourika), list_of_outliers$Mapourika_Middleton), list_of_outliers$Middleton_Paringa), list_of_outliers$Alexandrina_Middleton), list_of_outliers$Mapourika_Paringa)
+
+Incoming_to_Selfe_East= setdiff(setdiff(intersect(intersect(West_East_outliers, list_of_outliers$Mapourika_Selfe), list_of_outliers$Paringa_Selfe), list_of_outliers$Alexandrina_Selfe), list_of_outliers$Middleton_Selfe)
+Incoming_to_Selfe_East=Incoming_to_Selfe_East[!duplicated(Incoming_to_Selfe_East)]
+  
+Incoming_to_Selfe_West= setdiff(setdiff(intersect(intersect(West_East_outliers, list_of_outliers$Middleton_Selfe), list_of_outliers$Alexandrina_Selfe), list_of_outliers$Mapourika_Selfe),list_of_outliers$Paringa_Selfe)
+Incoming_to_Selfe_West=Incoming_to_Selfe_West[!duplicated(Incoming_to_Selfe_West)]
+
+BDMI = setdiff(setdiff(setdiff(setdiff(West_East_outliers, list_of_outliers$Alexandrina_Selfe), list_of_outliers$Mapourika_Selfe), list_of_outliers$Paringa_Selfe), list_of_outliers$Middleton_Selfe)
+
+colors2 = setNames(c("plum", "darkcyan", "darkorange", "darkgrey"), c("Introgressing from East", "Introgressing from West", "Introgressing from both", "Rest"))
+```
+
+## SNPs incoming to Selfe {.tabset}
+
+### Nucleotide diversity
+
+```{r, fig.height=5, fig.width=11}
+
+temp = for_plots[,c(1,2,3, 10,11,12,13,14,19)] %>% 
+  mutate(color = case_when(window %in% Incoming_to_Selfe_East ~ "Introgressing from East", 
+                           window %in% Incoming_to_Selfe_West ~ "Introgressing from West",
+                           window %in% BDMI ~ "Introgressing from both",
+                           .default = "Rest")) %>% 
+  melt(id.vars = c("chrom", "start", "end", "color", "window"))
+
+p1 = temp[temp$color != "Rest",] %>% mutate(variable = str_remove(variable, "_ThetaPi"), 
+                     variable2 = case_when(variable %in% c("Alexandrina", "Middleton") ~ "East",
+                                           variable %in% c("Mapourika", "Paringa") ~ "West", 
+                                           .default = "Selfe")) %>%
+  ggplot(aes(factor(variable2, levels = c("East", "Selfe", "West")), value, fill = color)) + 
+  geom_violin() + theme(legend.position = "top") +
+  stat_summary(fun.y=median, geom="point", size=2, color="red", position=position_dodge(width=0.9)) + 
+  labs(x = "", y = "Nucleotide diversity (Theta_pi)", fill= "Fst outlier") + scale_fill_manual(values = colors2)
+pdf("../Figures/Nucleotide_diversity_WestvsEast.pdf", height = 5, width = 8)
+p1
+dev.off()
+```
+
+
+
+```{r, fig.height=5, fig.width=11}
+
+
+
+p1 = temp %>% mutate(variable = str_remove(variable, "_ThetaPi")) %>%
+    ggplot(aes(color, value, fill = factor(variable, levels = c("Alexandrina", "Middleton", "Mapourika", "Paringa", "Selfe")))) + 
+    geom_violin() + 
+    stat_summary(fun.y=median, geom="point", size=2, color="red", position=position_dodge(width=0.9)) + 
+    labs(x = "", y = "Nucleotide diversity (Theta_pi)", fill= "Fst outlier") + scale_fill_manual(values = colors$lake) + theme(axis.text.x = element_text(angle = 45, hjust=1 , vjust = 1, size = 14))
+p1
+
+```
+
+
+### Window width
+
+
+```{r, fig.height=5, fig.width=7}
+windows = for_plots[,c(1,2,3,4,5,18,19,20,21)]
+windows$window_length_bins = ezCut(windows$window_length, breaks = seq(500, 5000, 1000))
+
+p2 = windows[windows$color == "final_outlier",] %>% 
+  mutate(color2 = case_when(window %in% Incoming_to_Selfe_East ~ "Introgressing from East", 
+                           window %in% Incoming_to_Selfe_West ~ "Introgressing from West",
+                           window %in% BDMI ~ "Introgressing from both",
+                           .default = "Rest")) %>% group_by(color2, window_length_bins) %>% dplyr::summarise(count = n_distinct(window)) %>% ggplot(aes(count, color2, fill = window_length_bins)) + geom_col(position = "fill") + labs(x = "Proportion", y = "", fill = "Window Length") + scale_fill_manual(values = brewPalette(n = 15))
+
+p2
+
+```
+
+### Find genes for those outlier SNPs
+
+```{r, fig.width=13, fig.height=7}
+
+obj = for_plots %>% mutate(category = case_when(window %in% Incoming_to_Selfe_East ~ "Introgressing from East", window %in% Incoming_to_Selfe_West ~ "Introgressing from West", window %in% BDMI ~ "Introgressing from both", .default = ""))
+
+tmp = merge(obj[obj$category != "",] %>% mutate(in_gene = if_else(gene_name != "", "in gene", "not in gene")), merge(obj %>% filter(category != "") %>% group_by(category, gene_name, chrom) %>% summarise(windows1 = n_distinct(window)) %>% filter(gene_name != ""), obj %>% group_by(gene_name, chrom) %>% summarise(windows2 = n_distinct(window)) %>% filter(gene_name != ""), by = c("gene_name", "chrom")) %>% mutate(ratio = windows1/windows2), by = c("gene_name", "chrom","category"), all = TRUE)
+
+tmp$window_length_bins = ezCut(tmp$window_length, breaks = seq(500, 10000, 1000))
+
+tmp$category = factor(tmp$category, levels = c("Introgressing from East", "Introgressing from West", "Introgressing from both"))
+
+p1 = tmp %>% group_by(category, in_gene, window_length_bins) %>% dplyr::summarise(count = n_distinct(window)) %>% ggplot(aes(count, str_wrap(category,12), fill = window_length_bins)) + geom_col(position = "stack") + labs(x = "Window count", y = "", fill = "Window Length") + scale_fill_manual(values = brewPalette(n = 15)) + facet_grid(~in_gene) + theme(strip.text = element_text(size = 15), axis.text.y = element_text(size = 12))
+
+p2 = ggplot(unique(tmp[,c(1,2,3,27)]), aes(category,ratio)) + ggbeeswarm::geom_quasirandom() + labs(x = "", y = "Fraction of gene divergence")
+
+Incoming_to_Selfe_East_genes = setdiff(unique(obj[obj$category == "Introgressing from East",]$gene_name), "")
+Incoming_to_Selfe_West_genes = setdiff(unique(obj[obj$category == "Introgressing from West",]$gene_name), "")
+BDMI_genes = setdiff(unique(obj[obj$category == "Introgressing from both",]$gene_name), "")
+
+list_of_genes_of_interest = list("Introgressing from East"= Incoming_to_Selfe_East_genes, "Introgressing from West" = Incoming_to_Selfe_West_genes, "Introgressing from both" = BDMI_genes)
+
+p3 = ggVennDiagram(list_of_genes_of_interest, set_color = unname(colors2)[c(1,2,3)]) + scale_x_continuous(expand = expansion(mult = .4))
+
+pdf("../Figures/Characterization_of_WestEast_genomicregions.pdf", height = 7, width = 12)
+p = p2 + p3
+p1/p
+dev.off()
+```
+
+
+
+```{r, fig.width=10, fig.height=5}
+tmp %>% group_by(category, in_gene) %>% summarise(window_in_genes = n_distinct(window)) %>% ungroup() %>% mutate(window_in_general = c(212,212,61,61,42,42)) %>% ggplot()  + geom_col(aes(category, window_in_general, fill = category)) + scale_fill_manual(values = colors2)+ geom_col(aes(category, window_in_genes), fill = "black") + theme(legend.position = "")
+```
+
+### DXY for these genes
+
+
+```{r, fig.width=10, fig.height=5}
+
+ggplot(dxy_per_window[dxy_per_window$window %in% Incoming_to_Selfe_West,], aes( value,variable)) + geom_boxplot()
+
+```
+
+Observed: low dxy for Incoming_to_Selfe_West
+
+
+Proportion of divergence of those genes
+
+```{r, fig.width=10, fig.height=5}
+obj = for_plots %>% mutate(category = case_when(window %in% Incoming_to_Selfe_East ~ "Introgressing from East", window %in% Incoming_to_Selfe_West ~ "Introgressing from West", window %in% BDMI ~ "Introgressing from both", .default = "")) 
+
+merge(obj %>% filter(category != "") %>% group_by(category, gene_name, chrom) %>% summarise(windows1 = n_distinct(window)) %>% filter(gene_name != ""), obj %>% group_by(gene_name, chrom) %>% summarise(windows2 = n_distinct(window)) %>% filter(gene_name != ""), by = c("gene_name", "chrom")) %>% mutate(ratio = windows1/windows2) %>% ggplot(aes(gene_name, ratio, fill = category)) + geom_col(position = "dodge") + theme(legend.position = "") 
+```
+
+### GO enrichment analysis
+
+```{r, fig.height=8, fig.width=10}
+
+list_of_genes_of_interest$`Introgressing from both` = setdiff(setdiff(list_of_genes_of_interest$`Introgressing from both`, list_of_genes_of_interest$`Introgressing from East`), list_of_genes_of_interest$`Introgressing from West`)
+
+BP_enrich = NULL
+MF_enrich = NULL
+CC_enrich = NULL
+
+for (i in names(list_of_genes_of_interest)){
+  df = enricher(list_of_genes_of_interest[[i]], 
+               pvalueCutoff = 0.05, 
+               pAdjustMethod = "BH", 
+               geneAnno$gene_name, 
+               minGSSize = 1, 
+               maxGSSize = 500, 
+               qvalueCutoff = 0.2, 
+               TERM2GENE = term2gene$BP, 
+               TERM2NAME = term2name$BP)
+  df = df@result %>% mutate(GO = "BP") %>% 
+    mutate("category" = i) %>% 
+    mutate(GeneRatio = as.numeric(sapply(str_split(GeneRatio, "/"), .subset, 1))/as.numeric(sapply(str_split(GeneRatio, "/"), .subset, 2))) %>% 
+    filter(qvalue < 0.05)
+  BP_enrich = rbind(BP_enrich, df)
+  dfm = enricher(list_of_genes_of_interest[[i]], 
+               pvalueCutoff = 0.05, 
+               pAdjustMethod = "BH", 
+               geneAnno$gene_name, 
+               minGSSize = 1, 
+               maxGSSize = 500, 
+               qvalueCutoff = 0.2, 
+               TERM2GENE = term2gene$MF, 
+               TERM2NAME = term2name$MF)
+  dfm = dfm@result %>% mutate(GO = "MF") %>% 
+    mutate("category" = i) %>% 
+    mutate(GeneRatio = as.numeric(sapply(str_split(GeneRatio, "/"), .subset, 1))/as.numeric(sapply(str_split(GeneRatio, "/"), .subset, 2))) %>% 
+    filter(qvalue < 0.05)
+  MF_enrich = rbind(MF_enrich, dfm)
+  dfc = enricher(list_of_genes_of_interest[[i]], 
+               pvalueCutoff = 0.05, 
+               pAdjustMethod = "BH", 
+               geneAnno$gene_name, 
+               minGSSize = 1, 
+               maxGSSize = 500, 
+               qvalueCutoff = 0.2, 
+               TERM2GENE = term2gene$CC, 
+               TERM2NAME = term2name$CC)
+  dfc = dfc@result %>% mutate(GO = "CC") %>% 
+    mutate("category" = i) %>% 
+    mutate(GeneRatio = as.numeric(sapply(str_split(GeneRatio, "/"), .subset, 1))/as.numeric(sapply(str_split(GeneRatio, "/"), .subset, 2))) %>% 
+    filter(qvalue < 0.05)
+  CC_enrich = rbind(CC_enrich, dfc)
+}
+
+```
+
+```{r, fig.height=10, fig.width=18}
+combined = rbind(BP_enrich, MF_enrich, CC_enrich) 
+combined = combined  %>% separate_longer_delim(geneID, delim = "/")
+combined = merge(combined, IC, by.x = "ID", by.y = "V1", all.x = TRUE)
+
+
+subset_combined = NULL
+for (i in unique(combined$geneID)){
+  for (x in unique(combined$category)){
+    for (c in unique(combined$GO)){
+      if (nrow(combined[which(combined$geneID == i & combined$category == x & combined$GO == c),]) > 0){
+      txm = combined[which(combined$geneID == i & combined$category == x & combined$GO == c),]
+      txm = txm[txm$V2 == min(txm$V2),]
+      subset_combined = rbind(subset_combined, txm)
+      }
+    }
+  }
+}
+
+
+subset_combined = merge(subset_combined, slimdf, by.x = c("ID","geneID", "GO"), by.y = c("go_terms","Gene", "GO"), all.x = TRUE)
+desc = setNames(subset_combined$Description, subset_combined$Term)
+desc = desc[!duplicated(desc)]
+desc = desc[!is.na(names(desc))]
+
+rbind(combined[combined$Count > 1 & combined$category %in% c("Differentiated West-East", "Differentiated Selfe-West"),], combined[combined$category %in% c("Differentiated Selfe-East"),])
+# subset_combined = subset_combined[!subset_combined$Description %in% c("hydrolase activity, acting on carbon-nitrogen (but not peptide) bonds, in nitriles"),]
+subset_combined = subset_combined %>% mutate(Term = if_else(is.na(Term), "Not annotated", Term))
+subset_combined = subset_combined %>% mutate(category = if_else(category == "Introgressing from West", "from West", category))
+subset_combined$category = factor(subset_combined$category, levels = c("Introgressing from East","from West", "Introgressing from both"))
+subset_combined$Term = factor(subset_combined$Term, levels = c("Not annotated", unique(subset_combined$Term)[!grepl("Not annotated", unique(subset_combined$Term))]))
+
+p1 = subset_combined %>% 
+  ggplot(aes(GeneRatio,str_wrap(Description, 50), size = Count,color = pvalue)) + 
+  geom_point() + 
+  facet_grid(category~GO, scales = "free",space = "free_y") + labs(y = "") + theme_bw() +
+  theme(axis.text.y = element_text(size = 9), strip.text = element_text(size = 11)) +
+  theme(plot.margin = unit(c(0, 0, 0, 0), "cm"), legend.position = "right",axis.text.y = element_blank(), legend.text = element_text(size = 11)) + scale_size_continuous(breaks = c(1, 2, 3))
+
+p2 = ggplot(subset_combined) +
+    geom_col(aes(y = str_wrap(Description, 50), x = 1, fill = Term), position = "fill") + facet_grid(category~., scales = "free",space = "free_y") + 
+    theme_bw()  + 
+    theme(axis.text.x = element_blank(), 
+          axis.title.x = element_blank(), 
+          axis.ticks.x = element_blank(), 
+          panel.background = element_blank(), 
+          plot.background = element_blank(), strip.text = element_blank(), axis.title.y = element_blank(), plot.margin = unit(c(0, 0, 0, 0), "cm"), axis.text.y = element_text(size = 11),legend.text = element_text(size = 11)) + scale_fill_manual(values = c("white",brewPalette(n = 21))) + guides(fill=guide_legend(ncol=1))
+
+p = p2 + p1 +
+    plot_layout(widths = c(.05, 1.1), ncol = 2, guides = "collect") & theme(legend.position = 'right') 
+
+# p3 = combined  %>% separate_longer_delim(geneID, delim = "/") %>% 
+#   group_by(GO, category) %>% 
+#   summarise(count = n_distinct(geneID)) %>% 
+#   ggplot(aes(GO,count)) + 
+#   geom_col() + 
+#   labs(x = "GO category", y = "Number of genes") + 
+#   facet_grid(category~GO, scales = "free_x") + 
+#   theme(axis.text.x = element_blank()) 
+# 
+# plot_grid(p, p3, ncol = 2, rel_widths = c(3, 1))
+
+#write_delim(data.frame(GOslim = unique(combined$Term)[!is.na(unique(combined$GOslim))]), "../Sex_specific_genes/GO_terms_WEdiff_of_interest.txt")
+pdf("../Figures/GO_results.pdf", height = 9.5, width = 15)
+p
+dev.off()
+```
+
+```{r, fig.height=8, fig.width=10}
+edo = enricher(list_of_genes_of_interest$`Introgressing from East`, 
+               pvalueCutoff = 0.05, 
+               pAdjustMethod = "BH", 
+               geneAnno$gene_name, 
+               minGSSize = 1, 
+               maxGSSize = 500, 
+               qvalueCutoff = 0.2, 
+               TERM2GENE = term2gene$MF, 
+               TERM2NAME = term2name$MF)
+
+edox = pairwise_termsim(edo)
+pdf("../Figures/emapplot_MF_fromEast.pdf", height=8, width=10)
+emapplot(edox, cex_label_category = 0.7,  layout = "nicely")
+dev.off()
+```
+
+```{r, fig.height=8, fig.width=10}
+edo = enricher(list_of_genes_of_interest$`Introgressing from West`, 
+               pvalueCutoff = 0.05, 
+               pAdjustMethod = "BH", 
+               geneAnno$gene_name, 
+               minGSSize = 1, 
+               maxGSSize = 500, 
+               qvalueCutoff = 0.2, 
+               TERM2GENE = term2gene$MF, 
+               TERM2NAME = term2name$MF)
+
+edox = pairwise_termsim(edo)
+pdf("../Figures/emapplot_MF_fromWest.pdf", height=5, width=5)
+emapplot(edox, cex_label_category = 0.7,  layout = "nicely")
+dev.off()
+```
+
+
+```{r, fig.height=8, fig.width=10}
+edo = enricher(list_of_genes_of_interest$`Introgressing from both`, 
+               pvalueCutoff = 0.05, 
+               pAdjustMethod = "BH", 
+               geneAnno$gene_name, 
+               minGSSize = 1, 
+               maxGSSize = 500, 
+               qvalueCutoff = 0.2, 
+               TERM2GENE = term2gene$MF, 
+               TERM2NAME = term2name$MF)
+
+edox = pairwise_termsim(edo)
+pdf("../Figures/emapplot_MF_fromBoth.pdf", height=5, width=7)
+emapplot(edox, cex_label_category = 0.7,  layout = "nicely")
+dev.off()
+```
+
+
+
+### How many of those divergent genes map to these mitochondrial genes
+
+```{r orths, fig.height=7, fig.width=7}
+mtcandidatesT = list(c(unique(term2gene$Kegg[term2gene$Kegg$KO %in% term2name$Kegg[grepl("mitoch|acetyl-CoA|fumarate|riboflavin|MECR.*mitoch|AMPK|target of rapamycin|SIRT|SDH|NAD|BCS1|FDX2|iron-sulfur|reticulon|SLC25|mitoguardin|MAPK|MAP2K|MORG1|JNK", term2name$Kegg$Name),]$KO,]$Gene), c(unique(slimdf[grepl("mitochondri",slimdf$Term),]$Gene), 
+  unique(slimdf[grepl("NADH dehydrogenase",slimdf$Name),]$Gene))))
+
+pdf("../Figures/GGvenn_mito_WestvsEast_overlap.pdf", height = 8, width = 8)
+ggVennDiagram(c(list("Mitochondrial" = mtcandidatesT[[1]]), list_of_genes_of_interest), set_color = c("black",unname(colors2)[c(1,2,3)])) + scale_x_continuous(expand = expansion(mult = .3))
+dev.off()
+```
+
+Look at the wordclouds for this
+
+```{r orths, fig.height=6, fig.width=6}
+library(tm)
+library(dplyr)
+library(tidytext)
+library(wordcloud)
+library(textstem)
+library(cluster)
+wc_data = slimdf[slimdf$Gene %in% c(intersect(list_of_genes_of_interest$`Introgressing from East`, mtcandidatesT[[1]]), intersect(list_of_genes_of_interest$`Introgressing from both`, mtcandidatesT[[1]])),]
+wc_data = wc_data[!duplicated(wc_data),]
+all_wc = NULL
+wc_data$Term <- tolower(wc_data$Term)
+wc_data$Term <- gsub("[[:punct:]]", " ", wc_data$Term)
+wc_data <- wc_data %>% unnest_tokens(word, Term) %>% anti_join(stop_words)
+wc_data <- wc_data %>% mutate(word = lemmatize_words(word))
+wc_data <- wc_data %>% count(word, sort = TRUE)
+wordcloud(words = wc_data$word, freq = wc_data$n, min.freq = 2, random.order = FALSE)
+
+
+wc_data = term2name$BP[term2name$BP$Term %in% unique(term2gene$BP[term2gene$BP$Gene %in% c(intersect(list_of_genes_of_interest$`Introgressing from East`, mtcandidatesT[[1]]), intersect(list_of_genes_of_interest$`Introgressing from both`, mtcandidatesT[[1]])),]$Term),]
+wc_data = wc_data[!duplicated(wc_data),]
+all_wc = NULL
+wc_data$Name <- tolower(wc_data$Name)
+wc_data$Name <- gsub("[[:punct:]]", " ", wc_data$Name)
+wc_data <- wc_data %>% unnest_tokens(word, Name) %>% anti_join(stop_words)
+wc_data <- wc_data %>% mutate(word = lemmatize_words(word))
+wc_data <- wc_data %>% count(word, sort = TRUE)
+wordcloud(words = wc_data$word, freq = wc_data$n, min.freq = 1, random.order = FALSE)
+```
+
+Fst of those genes across all comparisons
+
+```{r orths, fig.height=6, fig.width=6}
+
+for_plots %>% filter(gene_name %in% c(intersect(list_of_genes_of_interest$`Introgressing from East`, mtcandidatesT), intersect(list_of_genes_of_interest$`Introgressing from both`, mtcandidatesT))) %>% ggplot( aes(Fst, label, fill = "allthesame")) + geom_boxplot(outliers = F) + theme_classic() + geom_vline(xintercept = 0.2, color = "red", linetype = "dashed") + scale_fill_manual(values = "grey") + theme(legend.position = "") + labs(x = "Fst of Differentiated Regions") +  theme(axis.title.y = element_blank())
+
+```
+
+
+what if you subsample widows at random - how many will map to mitochondrial genes - MC permutation
+
+```{r orths, fig.height=6, fig.width=6}
+
+# Parameters
+N <- length(unique(for_plots$gene_name))                # Total number of genes
+x <- length(mtcandidatesT)                 # Number of mitochondrial genes
+n <- length(list_of_genes_of_interest$`Introgressing from East`)                 # Number of outliers
+y <-  length(intersect(mtcandidatesT, list_of_genes_of_interest$`Introgressing from East`))                 # Observed number of mitochondrial outliers
+
+# Monte Carlo simulation
+set.seed(42)  # For reproducibility
+num_simulations <- 10000
+results <- replicate(num_simulations, {
+  sampled_genes <- sample(unique(for_plots$gene_name), n)  # Randomly sample outlier genes
+  sum(sampled_genes %in% mtcandidatesT)  # Count mitochondrial genes in the sample
+})
+
+
+p_value <- mean(results >= y)
+
+cat("Observed mitochondrial outliers:", y, "\n")
+cat("P-value (MC permutation test):", p_value, "\n")
+```
+
+### BlastP results for both categories
+
+```{r orths, fig.height=6, fig.width=6}
+#Use the reciprocal blast results
+blast_male_atrio = read.delim("../Sex_specific_genes/blastp.male.out", header = F)
+blast_male_atrio$V1 = str_remove(blast_male_atrio$V1, "-mRNA-1")
+blast_female_atrio = read.delim("../Sex_specific_genes/blastp.female.out", header = F)
+blast_female_atrio$V1 = str_remove(blast_female_atrio$V1, "-mRNA-1")
+
+blast = rbind(blast_female_atrio[blast_female_atrio$V1 %in% list_of_genes_of_interest$`Introgressing from East`,] %>% 
+          mutate(category = "Introgressing from East", blast = "female_specific_expression_inSjaponicum") %>% 
+          group_by(category, blast) %>% 
+          summarise(nb_genes = n_distinct(V1)), 
+      blast_female_atrio[blast_female_atrio$V1 %in% list_of_genes_of_interest$`Introgressing from West`,] %>% 
+          mutate(category = "Introgressing from West", blast = "female_specific_expression_inSjaponicum") %>% 
+          group_by(category, blast) %>% summarise(nb_genes = n_distinct(V1)), 
+      blast_female_atrio[blast_female_atrio$V1 %in% list_of_genes_of_interest$`Introgressing from both`,] %>% 
+          mutate(category = "Introgressing from both", blast = "female_specific_expression_inSjaponicum") %>% 
+          group_by(category, blast) %>% summarise(nb_genes = n_distinct(V1)), 
+      blast_male_atrio[blast_male_atrio$V1 %in% list_of_genes_of_interest$`Introgressing from East`,] %>% 
+          mutate(category = "Introgressing from East", blast = "male_specific_expression_inSjaponicum") %>% 
+          group_by(category, blast) %>% 
+          summarise(nb_genes = n_distinct(V1)), 
+      blast_male_atrio[blast_male_atrio$V1 %in% list_of_genes_of_interest$`Introgressing from both`,] %>% 
+          mutate(category = "Introgressing from both", blast = "male_specific_expression_inSjaponicum") %>% 
+          group_by(category, blast) %>% 
+          summarise(nb_genes = n_distinct(V1)), 
+      blast_male_atrio[blast_male_atrio$V1 %in% list_of_genes_of_interest$`Introgressing from West`,] %>% 
+          mutate(category = "Introgressing from West", blast = "male_specific_expression_inSjaponicum") %>% 
+          group_by(category, blast) %>% 
+          summarise(nb_genes = n_distinct(V1))) 
+blast$category = factor(blast$category, levels =  c("Introgressing from East","Introgressing from West", "Introgressing from both"))
+
+p1 = ggplot(blast, aes(category, nb_genes, fill = blast)) + 
+  geom_col(position = "dodge") + 
+  scale_fill_manual(values = c("indianred", "#1F78B4FF")) + 
+  labs(x = "", y = "Number of genes", fill = "BlastP results") + 
+  theme_classic() + 
+  theme(legend.position = "top") + 
+  guides(fill=guide_legend(ncol=1))
+
+p2 = ggVennDiagram(list_of_genes_of_interest) + scale_x_continuous(expand = expansion(mult = .4))
+
+p1
+```
+
+
+### Genomic position 
+
+```{r, fig.height=18, fig.width=16}
+
+ggplot(for_plots %>% mutate(color2 = case_when(window %in% Incoming_to_Selfe_East ~ "Differentiated Selfe-West", window %in% Incoming_to_Selfe_West ~ "Differentiated Selfe-East", window %in% BDMI ~ "Differentiated West-East", .default = "Rest")),aes(window, Fst, color = color2)) + geom_point() + theme(axis.text.x = element_blank()) + labs(x = "Position", y = "Average Fst") + facet_wrap(~label, ncol = 1)
+```
+
+### Particular genes
+
+```{r, fig.height=9, fig.width=7}
+
+temp$label = factor(temp$label, levels = c("Alexandrina_Middleton", "Alexandrina_Selfe", "Middleton_Selfe", "Alexandrina_Paringa", "Middleton_Paringa", "Alexandrina_Mapourika","Mapourika_Middleton", "Mapourika_Selfe", "Paringa_Selfe", "Mapourika_Paringa"))
+
+ggplot(temp %>% mutate(color2 = case_when(window %in% Incoming_to_Selfe_East ~ "Introgressing from East", window %in% Incoming_to_Selfe_West ~ "Introgressing from West", window %in% BDMI ~ "Introgressing from both", .default = "Rest")) %>% filter(gene_name == "maker-jcf7180000271068-augustus-gene-0.1"),aes(window, Fst, color = color)) + geom_point() + theme(axis.text.x = element_blank()) + labs(x = "Position", y = "Average Fst") + facet_wrap(~label, ncol = 1) + scale_color_manual(values = c("red", "black"))
+```
+
+```{r, fig.height=9, fig.width=7}
+
+ggplot(temp %>% mutate(color2 = case_when(window %in% Incoming_to_Selfe_East ~ "Introgressing from East", window %in% Incoming_to_Selfe_West ~ "Introgressing from West", window %in% BDMI ~ "Introgressing from both", .default = "Rest")) %>% filter(gene_name == "maker-jcf7180000271971-snap-gene-0.9"),aes(window, Fst, color = color)) + geom_point() + theme(axis.text.x = element_blank()) + labs(x = "Position", y = "Average Fst") + facet_wrap(~label, ncol = 1) + scale_color_manual(values = c("red", "black"))
+```
+
+## Selecting Gene outliers {.tabset}
+
+```{r setup}
+Fst_grendalf = read_delim("../FST/Popoolation2/Sliding_Fst_per_Lake/Fst_genewise.Grendalf.Pi.FET.C2.txt")
+Fst_grendalf$window = paste0(Fst_grendalf$chrom, "-", Fst_grendalf$start, "-", Fst_grendalf$end)
+
+snps = Fst_grendalf[,c(1,2,3)] %>% unique() 
+snps = data.table(snps)
+setkey(snps, chrom, start, end)
+obj = foverlaps(snps, genes, by.x = c("chrom", "start", "end"), 
+                by.y = c("Chr", "start", "end"), type = "within", nomatch = 0)
+obj = merge(data.frame(obj), geneAnno[,c(3,6,8,9)], by.x = c("chrom", "start", "end"), by.y = c("seqid", "start", "end"), all = TRUE)
+Fst_grendalf = merge(Fst_grendalf, obj %>% select(-2,-3) , by.x = c("chrom", "start", "end"), by.y = c("chrom", "i.start", "i.end"), all.x = TRUE) %>% replace(is.na(.), "")
+
+for_plots = NULL
+for (i in unique(Fst_grendalf$label)[c(2:5,7:9,11,12,14)]){
+  tb = Fst_grendalf[Fst_grendalf$label == i,]
+  x = list("Grendalf" = tb[tb$MeanGrendalfFst_4sd == "outlier",]$window, 
+           "C2" = tb[tb$C2std_Sig_SNPs > 0,]$window, 
+           "FetMean" = tb[tb$FET_SigMean_SNPs > 0,]$window, 
+           "FetMedian" = tb[tb$FET_SigMedian_SNPs > 0,]$window)
+  tb$color = if_else(tb$window %in% Reduce(intersect, x), "final_outlier", "not_outlier")
+  for_plots = rbind(for_plots, tb)
+}
+
+xn = list("4SDGrendalf" = Fst_grendalf[Fst_grendalf$MeanGrendalfFst_4sd == "outlier",]$window, 
+         "C2" = Fst_grendalf[Fst_grendalf$C2std_Sig_SNPs > 1,]$window, 
+         "FetMean" = Fst_grendalf[Fst_grendalf$FET_SigMean_SNPs > 0,]$window, 
+         "FetMedian" = Fst_grendalf[Fst_grendalf$FET_SigMedian_SNPs > 0,]$window)
+
+for_plots = for_plots %>% mutate(label2 = case_when(label %in% c("Alexandrina_Paringa", "Alexandrina_Mapourika", "Middleton_Paringa", "Mapourika_Middleton") ~ "West vs East", label %in% c("Alexandrina_Selfe", "Middleton_Selfe") ~ "East vs Selfe", label %in% c("Mapourika_Selfe", "Paringa_Selfe") ~ "West vs Selfe",  label == "Alexandrina_Middleton" ~ "East vs East",  label == "Mapourika_Paringa" ~ "West vs West"))
+
+```
+
+
+### West vs East
+
+```{r, fig.height=6, fig.width=12}
+list_of_outliers = NULL
+for (i in unique(for_plots$label)){
+  tb = for_plots[for_plots$label == i,] %>% group_by(gene_name, color) %>% dplyr::summarise(count = n_distinct(gene_name)) %>% filter(color == "final_outlier")
+  tb = tb$gene_name
+  list_of_outliers[[i]] = tb
+}
+
+```
+
+Upset plot of regions differentiated between West and East 
+
+```{r, fig.height=5, fig.width=12}
+m1 = make_comb_mat(list_of_outliers[c(1,3,5,8,4,9,7,10,2,6)])
+m1 = m1[grepl("^1111", comb_name(m1))]
+m1=m1[c(7,12,16)]
+ss = set_size(m1)
+cs = comb_size(m1)
+Fst = lapply(set_name(m1), function(ind) for_plots[for_plots$label == ind,] %>% group_by(gene_name) %>% dplyr::summarise(meanFst = mean(Fst)) %>% dplyr::select(meanFst) %>% as.list())
+Fst = lapply(Fst, function(x){return(x$meanFst)})
+names(Fst) = set_name(m1)
+subgroup = unique(for_plots[,c(4,19)]) %>% rownames_to_column() %>% column_to_rownames("label") %>% dplyr::select(label2)
+Fst_out = lapply(set_name(m1), function(ind) for_plots[for_plots$label == ind & for_plots$color == "final_outlier",] %>% group_by(gene_name) %>% dplyr::summarise(meanFst = mean(Fst)) %>% dplyr::select(meanFst) %>% as.list())
+Fst_out = lapply(Fst_out, function(x){return(x$meanFst)})
+names(Fst_out) = set_name(m1)
+
+ht = UpSet(m1, 
+           set_order = c("Alexandrina_Middleton", "Mapourika_Paringa", "Alexandrina_Paringa", "Alexandrina_Mapourika", "Mapourika_Middleton", "Middleton_Paringa", "Alexandrina_Selfe", "Middleton_Selfe", "Mapourika_Selfe", "Paringa_Selfe"),
+           comb_order = order(-cs),
+           top_annotation = HeatmapAnnotation(
+               "Outlier Intersections" = anno_barplot(cs, 
+                                                      ylim = c(0, max(cs)*1.1),
+                                                      border = FALSE, 
+                                                      gp = gpar(fill = c("darkcyan", "plum", "darkorange"), fontsize = 8), 
+                                                      height = unit(4, "cm")
+               ), 
+               annotation_name_side = "left", 
+               annotation_name_rot = 90),
+           left_annotation = rowAnnotation(
+               "Outliers per Lake" = anno_barplot(-ss, 
+                                                  baseline = 0,
+                                                  axis_param = list(
+                                                      at = c(0, -500, -1000, -1500),
+                                                      labels = c(0, 500, 1000, 1500),
+                                                      labels_rot = 0),
+                                                  border = FALSE, 
+                                                  gp = gpar(fill = c("black", "black", "black", "black", "lightgrey", "lightgrey", "lightgrey", "lightgrey", "white", "white")),
+                                                  width = unit(4, "cm")
+               ),
+               set_name = anno_text(set_name(m1),
+                                    location = 1, 
+                                    just = "right",gp = gpar(fontsize = 10),
+                                    width = max_text_width(set_name(m1)) + 
+                                        unit(2, "mm"))), 
+           right_annotation = rowAnnotation("Fst all genes" = anno_boxplot(Fst,width = unit(5, "cm"), outline = F),
+                                            "Fst outliers" = anno_boxplot(Fst_out,width = unit(5, "cm"), outline = F),
+                                            gap = unit(4, "mm")),
+           show_row_names = FALSE)
+
+ht = draw(ht)
+od = column_order(ht)
+
+decorate_annotation("Outlier Intersections", {
+    grid.text(cs[od], x = seq_along(cs), y = unit(cs[od], "native") + unit(2, "pt"), 
+              default.units = "native", just = c("left", "bottom"), 
+              gp = gpar(fontsize = 6, col = "#404040"), rot = 45)
+})
+
+decorate_annotation("Fst all genes", {
+    grid.lines(c(0.05, 0.05), c(0.5, 10.5), gp = gpar(lty = 3, col = "red"),
+               default.units = "native")
+})
+decorate_annotation("Fst outliers", {
+    grid.lines(c(0.2, 0.2), c(0.5, 10.5), gp = gpar(lty = 3, col = "red"),
+               default.units = "native")
+})
+```
+
+
+```{r, sets_of_snps_of_intest, include=FALSE}
+
+West_East_outliers = setdiff(setdiff(intersect(intersect(intersect(list_of_outliers$Alexandrina_Paringa, list_of_outliers$Alexandrina_Mapourika), list_of_outliers$Mapourika_Middleton), list_of_outliers$Middleton_Paringa), list_of_outliers$Alexandrina_Middleton), list_of_outliers$Mapourika_Paringa)
+
+Incoming_to_Selfe_East= setdiff(setdiff(intersect(intersect(West_East_outliers, list_of_outliers$Mapourika_Selfe), list_of_outliers$Paringa_Selfe), list_of_outliers$Alexandrina_Selfe), list_of_outliers$Middleton_Selfe)
+Incoming_to_Selfe_East=Incoming_to_Selfe_East[!duplicated(Incoming_to_Selfe_East)]
+  
+Incoming_to_Selfe_West= setdiff(setdiff(intersect(intersect(West_East_outliers, list_of_outliers$Middleton_Selfe), list_of_outliers$Alexandrina_Selfe), list_of_outliers$Mapourika_Selfe),list_of_outliers$Paringa_Selfe)
+Incoming_to_Selfe_West=Incoming_to_Selfe_West[!duplicated(Incoming_to_Selfe_West)]
+
+BDMI = setdiff(setdiff(setdiff(setdiff(West_East_outliers, list_of_outliers$Alexandrina_Selfe), list_of_outliers$Mapourika_Selfe), list_of_outliers$Paringa_Selfe), list_of_outliers$Middleton_Selfe)
+
+list_of_genes_of_interest = list("Introgressing from East" = Incoming_to_Selfe_East, "Introgressing from West" = Incoming_to_Selfe_West, "Introgressing from both" = BDMI)
+
+colors2 = setNames(c("plum", "darkcyan", "darkorange", "darkgrey"), c("Introgressing from East", "Introgressing from West", "Introgressing from both", "Rest"))
+```
+
+## SNPs incoming to Selfe {.tabset}
+
+### Nucleotide diversity
+
+```{r, fig.height=10, fig.width=25}
+
+temp = for_plots[,c(1,2,3, 8,9,10,11,12,17)] %>% 
+  mutate(color = case_when(gene_name %in% Incoming_to_Selfe_East ~ "Introgressing from East", 
+                           gene_name %in% Incoming_to_Selfe_West ~ "Introgressing from West",
+                           gene_name %in% BDMI ~ "Introgressing from both",
+                           .default = "Rest")) %>% 
+  melt(id.vars = c("chrom", "start", "end", "color", "gene_name"))
+
+p1 = temp %>% mutate(variable = str_remove(variable, "_ThetaPi")) %>%
+    ggplot(aes(color, value, fill = factor(variable, levels = c("Alexandrina", "Middleton", "Mapourika", "Paringa", "Selfe")))) + 
+    geom_boxplot(outliers = F) + 
+    stat_summary(fun.y=median, geom="point", size=2, color="red", position=position_dodge(width=0.9)) + 
+    labs(x = "", y = "Nucleotide diversity (Theta_pi)", fill= "Fst outlier") + scale_fill_manual(values = colors$lake) + theme(axis.text.x = element_text(angle = 45, hjust=1 , vjust = 1, size = 14))
+p1
+```
+
+
+### GO enrichment analysis
+
+```{r, fig.height=8, fig.width=10}
+
+BP_enrich = NULL
+MF_enrich = NULL
+CC_enrich = NULL
+for (i in names(list_of_genes_of_interest)[c(1,3)]){
+  df = enricher(list_of_genes_of_interest[[i]], 
+               pvalueCutoff = 0.2, 
+               pAdjustMethod = "BH", 
+               geneAnno$gene_name, 
+               minGSSize = 1, 
+               maxGSSize = 500, 
+               qvalueCutoff = 0.2, 
+               TERM2GENE = term2gene$BP, 
+               TERM2NAME = term2name$BP)
+  df = df@result %>% mutate(GO = "BP") %>% 
+    mutate("category" = i) %>% 
+    mutate(GeneRatio = as.numeric(sapply(str_split(GeneRatio, "/"), .subset, 1))/as.numeric(sapply(str_split(GeneRatio, "/"), .subset, 2))) %>% 
+    filter(pvalue < 0.051)
+  BP_enrich = rbind(BP_enrich, df)
+  dfm = enricher(list_of_genes_of_interest[[i]], 
+               pvalueCutoff = 0.2, 
+               pAdjustMethod = "BH", 
+               geneAnno$gene_name, 
+               minGSSize = 1, 
+               maxGSSize = 500, 
+               qvalueCutoff = 0.2, 
+               TERM2GENE = term2gene$MF, 
+               TERM2NAME = term2name$MF)
+  dfm = dfm@result %>% mutate(GO = "MF") %>% 
+    mutate("category" = i) %>% 
+    mutate(GeneRatio = as.numeric(sapply(str_split(GeneRatio, "/"), .subset, 1))/as.numeric(sapply(str_split(GeneRatio, "/"), .subset, 2))) %>% 
+    filter(pvalue < 0.051)
+  MF_enrich = rbind(MF_enrich, dfm)
+  dfc = enricher(list_of_genes_of_interest[[i]], 
+               pvalueCutoff = 0.2, 
+               pAdjustMethod = "BH", 
+               geneAnno$gene_name, 
+               minGSSize = 1, 
+               maxGSSize = 500, 
+               qvalueCutoff = 0.2, 
+               TERM2GENE = term2gene$CC, 
+               TERM2NAME = term2name$CC)
+  dfc = dfc@result %>% mutate(GO = "CC") %>% 
+    mutate("category" = i) %>% 
+    mutate(GeneRatio = as.numeric(sapply(str_split(GeneRatio, "/"), .subset, 1))/as.numeric(sapply(str_split(GeneRatio, "/"), .subset, 2))) %>% 
+    filter(pvalue < 0.051)
+  CC_enrich = rbind(CC_enrich, dfc)
+}
+
+dfm = enricher(list_of_genes_of_interest[[2]], 
+               pvalueCutoff = 0.2, 
+               pAdjustMethod = "BH", 
+               geneAnno$gene_name, 
+               minGSSize = 1, 
+               maxGSSize = 500, 
+               qvalueCutoff = 0.2, 
+               TERM2GENE = term2gene$MF, 
+               TERM2NAME = term2name$MF)
+dfm = dfm@result %>% mutate(GO = "MF") %>% 
+    mutate("category" = "Introgressing from West") %>% 
+    mutate(GeneRatio = as.numeric(sapply(str_split(GeneRatio, "/"), .subset, 1))/as.numeric(sapply(str_split(GeneRatio, "/"), .subset, 2))) %>%  filter(pvalue < 0.051)
+MF_enrich = rbind(MF_enrich, dfm)
+```
+
+```{r, fig.height=10, fig.width=18}
+combined = rbind(BP_enrich, MF_enrich, CC_enrich) 
+combined = combined = combined  %>% separate_longer_delim(geneID, delim = "/")
+combined = merge(combined, IC, by.x = "ID", by.y = "V1", all.x = TRUE)
+
+
+subset_combined = NULL
+for (i in unique(combined$geneID)){
+  for (x in unique(combined$category)){
+    for (c in unique(combined$GO)){
+      if (nrow(combined[which(combined$geneID == i & combined$category == x & combined$GO == c),]) > 0){
+      txm = combined[which(combined$geneID == i & combined$category == x & combined$GO == c),]
+      txm = txm[txm$V2 == max(txm$V2),]
+      subset_combined = rbind(subset_combined, txm)
+      }
+    }
+  }
+}
+
+
+subset_combined = merge(subset_combined, slimdf, by.x = c("ID","geneID", "GO"), by.y = c("go_terms","Gene", "GO"), all.x = TRUE)
+desc = setNames(subset_combined$Description, subset_combined$Term)
+desc = desc[!duplicated(desc)]
+desc = desc[!is.na(names(desc))]
+
+subset_combined = subset_combined %>% mutate(Term = if_else(is.na(Term), "Not annotated", Term))
+subset_combined = subset_combined %>% mutate(category = if_else(category == "Introgressing from West", "from West", category))
+subset_combined$category = factor(subset_combined$category, levels = c("Introgressing from East","from West", "Introgressing from both"))
+subset_combined$Term = factor(subset_combined$Term, levels = c("Not annotated", unique(subset_combined$Term)[-13]))
+
+p1 = subset_combined %>% 
+  ggplot(aes(GeneRatio,str_wrap(Description, 50), size = Count,color = pvalue)) + 
+  geom_point() + 
+  facet_grid(category~GO, scales = "free",space = "free_y") + labs(y = "") + theme_bw() +
+  theme(axis.text.y = element_text(size = 9), strip.text = element_text(size = 11)) +
+  theme(plot.margin = unit(c(0, 0, 0, 0), "cm"), legend.position = "right",axis.text.y = element_blank()) + scale_size_continuous(breaks = c(1, 2, 3))
+
+p2 = ggplot(subset_combined) +
+    geom_col(aes(y = Description, x = 1, fill = Term), position = "fill") + facet_grid(category~., scales = "free",space = "free_y") + 
+    theme_bw()  + 
+    theme(axis.text.x = element_blank(), 
+          axis.title.x = element_blank(), 
+          axis.ticks.x = element_blank(), 
+          panel.background = element_blank(), 
+          plot.background = element_blank(), strip.text = element_blank(), axis.title.y = element_blank(), plot.margin = unit(c(0, 0, 0, 0), "cm")) + scale_fill_manual(values = c("white",brewPalette(n = 35))) + guides(fill=guide_legend(ncol=2))
+
+p = p2 + p1 +
+    plot_layout(widths = c(.05, 1.1), ncol = 2, guides = "collect") & theme(legend.position = 'right') 
+```
+
+### BlastP results for both categories
+
+```{r orths, fig.height=6, fig.width=13}
+#Use the reciprocal blast results
+blast_male_atrio = read.delim("../Sex_specific_genes/blastp.male.out", header = F)
+blast_male_atrio$V1 = str_remove(blast_male_atrio$V1, "-mRNA-1")
+blast_female_atrio = read.delim("../Sex_specific_genes/blastp.female.out", header = F)
+blast_female_atrio$V1 = str_remove(blast_female_atrio$V1, "-mRNA-1")
+
+p1 = rbind(blast_female_atrio[blast_female_atrio$V1 %in% list_of_genes_of_interest$`Introgressing from East`,] %>% 
+          mutate(category = "Introgressing from East", blast = "female_specific_expression_inSjaponicum") %>% 
+          group_by(category, blast) %>% 
+          summarise(nb_genes = n_distinct(V1)), 
+      blast_female_atrio[blast_female_atrio$V1 %in% list_of_genes_of_interest$`Introgressing from West`,] %>% 
+          mutate(category = "Introgressing from West", blast = "female_specific_expression_inSjaponicum") %>% 
+          group_by(category, blast) %>% summarise(nb_genes = n_distinct(V1)), 
+      blast_female_atrio[blast_female_atrio$V1 %in% list_of_genes_of_interest$`Introgressing from both`,] %>% 
+          mutate(category = "Introgressing from both", blast = "female_specific_expression_inSjaponicum") %>% 
+          group_by(category, blast) %>% summarise(nb_genes = n_distinct(V1)), 
+      blast_male_atrio[blast_male_atrio$V1 %in% list_of_genes_of_interest$`Introgressing from East`,] %>% 
+          mutate(category = "Introgressing from East", blast = "male_specific_expression_inSjaponicum") %>% 
+          group_by(category, blast) %>% 
+          summarise(nb_genes = n_distinct(V1)), 
+      blast_male_atrio[blast_male_atrio$V1 %in% list_of_genes_of_interest$`Introgressing from both`,] %>% 
+          mutate(category = "Introgressing from both", blast = "male_specific_expression_inSjaponicum") %>% 
+          group_by(category, blast) %>% 
+          summarise(nb_genes = n_distinct(V1)), 
+      blast_male_atrio[blast_male_atrio$V1 %in% list_of_genes_of_interest$`Introgressing from West`,] %>% 
+          mutate(category = "Introgressing from West", blast = "male_specific_expression_inSjaponicum") %>% 
+          group_by(category, blast) %>% 
+          summarise(nb_genes = n_distinct(V1))) %>% 
+    ggplot(aes(category, nb_genes, fill = blast)) + 
+  geom_col(position = "dodge") + 
+  scale_fill_manual(values = c("lightblue1", "lightblue3")) + 
+  labs(x = "", y = "Number of genes", fill = "BlastP results") + 
+  theme_classic() + 
+  theme(legend.position = "top") + 
+  guides(fill=guide_legend(ncol=1))
+
+p2 = ggVennDiagram(list_of_genes_of_interest) + scale_x_continuous(expand = expansion(mult = .4))
+
+p1 + p2
+```
+
+
+### Genomic position 
+
+```{r, fig.height=18, fig.width=16}
+
+ggplot(for_plots %>% mutate(color2 = case_when(gene_name %in% Incoming_to_Selfe_East ~ "Differentiated Selfe-West", gene_name %in% Incoming_to_Selfe_West ~ "Differentiated Selfe-East", gene_name %in% BDMI ~ "Differentiated West-East", .default = "Rest")),aes(window, Fst, color = color2)) + geom_point() + theme(axis.text.x = element_blank()) + labs(x = "Position", y = "Average Fst") + facet_wrap(~label, ncol = 1)
+```
+
+## Rate of mt to nuclear diversity
+
+Turelli and Moyle (2007) suggested that differences between two species in the ratio of the rates of mitochondrial to nuclear evolution between two species can result in consistent asymmetries between reciprocal crosses. If the differences in these ratios are due to a systematic bias, then the species with the higher ratio of mitochondrial to nuclear evolution would be predicted to be the “worse” maternal parent, as was found in a clade of Centrarchid fish (Bolnick et al. 2008). 
+
+
+```{r, fig.height=5, fig.width=5}
+
+mt_div = read.delim("../FST/Queue.1SNPs.Mito.Diversitydiversity.csv", header = T, sep = ",")
+mt_div = data.frame(average_thetapi_mt = colMeans(mt_div[,grepl("theta_pi", colnames(mt_div))]))
+mt_div = mt_div %>% rownames_to_column() %>% mutate(rowname= sapply(str_split(rowname, "\\."), .subset, 3))
+
+nuc_div = read.delim("../FST/Queue.50SNPs.Diversitydiversity.csv", header = T, sep = ",")
+nuc_div = data.frame(average_thetapi = colMeans(nuc_div[,grepl("theta_pi", colnames(nuc_div))]))
+nuc_div = nuc_div %>% rownames_to_column() %>% mutate(rowname= sapply(str_split(rowname, "\\."), .subset, 1))
+
+merge(mt_div, nuc_div, by = "rowname") %>% mutate(average_thetapi_mt/average_thetapi) %>% mutate(lake = sapply(str_split(rowname, "_"), .subset, 1)) %>% mutate(lake = if_else(lake == "Alex", "Alexandrina", lake)) %>% ggplot(aes(factor(lake, levels = c("Alexandrina", "Middleton", "Selfe","Mapourika", "Paringa")),average_thetapi_mt/average_thetapi)) + geom_point() + geom_boxplot() + labs(x = "lake")
+```
+
+What about gene wise
+
+```{r, fig.height=5, fig.width=5}
+
+mt_div = read.delim("../FST/Queue.Mito.Diversity.Genewisediversity.csv", header = T, sep = ",")
+mt_div = data.frame(average_thetapi_mt = colMeans(mt_div[,grepl("theta_pi", colnames(mt_div))]))
+mt_div = mt_div %>% rownames_to_column() %>% mutate(rowname= sapply(str_split(rowname, "\\."), .subset, 3))
+
+nuc_div = read.delim("../FST/Queue.Diversity.Genewisediversity.csv", header = T, sep = ",")
+nuc_div = data.frame(average_thetapi = colMeans(nuc_div[,grepl("theta_pi", colnames(nuc_div))]))
+nuc_div = nuc_div %>% rownames_to_column() %>% mutate(rowname= sapply(str_split(rowname, "\\."), .subset, 3))
+
+merge(mt_div, nuc_div, by = "rowname") %>% mutate(average_thetapi_mt/average_thetapi) %>% mutate(lake = sapply(str_split(rowname, "_"), .subset, 1)) %>% mutate(lake = if_else(lake == "Alex", "Alexandrina", lake)) %>% ggplot(aes(factor(lake, levels = c("Alexandrina", "Middleton", "Selfe","Mapourika", "Paringa")),average_thetapi_mt/average_thetapi)) + geom_point() + geom_boxplot() + labs(x = "lake", y = "mt-nucleotide-div/N-nucleotide-div")
+```
+
+# Lets check the different mt genes - how are they differentitaed
+
+```{r setup, include=FALSE}
+mt_annot = read.csv("../Mitos2.annot.bed", header = F, sep = "\t")
+mt_annot$V1 = "Consensus_mic_mito"
+mt_annot$V2 = mt_annot$V2 + 1
+mt_fst = read_delim("../FST/GenewiseFst.Hudson.mtfst.csv")
+mt_fst = cbind(mt_fst[,c(1,2,3)], mt_fst[,grepl("fst", colnames(mt_fst))])
+
+mt_fst = melt(mt_fst, id.vars = c("chrom", "start", "end")) %>% 
+  separate(variable, into = c("pool1", "pool2"), sep = ":") %>% mutate(pool1 = str_remove(pool1, ".mito.sorted.dedup")) %>% 
+  mutate(pool2 = str_remove(pool2, ".mito.sorted.dedup.fst")) %>% mutate(pool1 = str_remove(pool1, "20190830.B-")) %>% 
+  mutate(pool2 = str_remove(pool2, "20190830.B-")) %>% 
+  mutate(label = paste0(sapply(str_split(pool1, "_"), .subset, 1), "_", sapply(str_split(pool2, "_"), .subset, 1))) %>% 
+  separate(label, into = c("lake1", "lake2"), sep = "_") %>% 
+  mutate(lake1 = if_else(lake1 == "Alex", "Alexandrina", lake1), lake2 = if_else(lake2 == "Alex", "Alexandrina", lake2)) %>% 
+  mutate(label = paste0(lake1, "_", lake2)) %>% dplyr::select(-4,-5, -7,-8) %>% 
+  group_by(chrom, start, end, label) %>% 
+  summarise(Fst = mean(value))
+
+mt_fst = mt_fst[mt_fst$label %in% unique(mt_fst$label)[c(-1,-6,-10,-13,-15)],]
+mt_fst$window = paste0(mt_fst$chrom, "-", mt_fst$start, "-", mt_fst$end)
+
+mt_fst = merge(mt_fst, mt_annot, by.x = c("chrom", "start", "end"), by.y = c("V1", "V2", "V3"), all = TRUE)
+mt_fst = mt_fst %>% mutate(label2 = case_when(label %in% c("Alexandrina_Paringa", "Alexandrina_Mapourika", "Middleton_Paringa", "Mapourika_Middleton") ~ "West vs East", 
+                                        label %in% c("Alexandrina_Selfe", "Middleton_Selfe") ~ "East vs Selfe", 
+                                        label %in% c("Mapourika_Selfe", "Paringa_Selfe") ~ "West vs Selfe", 
+                                        label == "Alexandrina_Middleton" ~ "East vs East",  label == "Mapourika_Paringa" ~ "West vs West"))
+
+
+div = read_delim("../FST/Queue.1SNPs.Mito.Diversitydiversity.csv")
+div = cbind(div[,c(1,2,3)], div[,grepl(".theta_pi", colnames(div))])
+div = melt(div, id.vars = c("chrom", "start", "end")) %>% 
+  mutate(variable = str_remove(variable, ".theta_pi")) %>% mutate(variable = str_remove(variable, "20190830.B-")) %>% 
+  mutate(label = sapply(str_split(variable, "_"), .subset, 1)) %>% dplyr::select(-4) %>% 
+  group_by(chrom, start, end, label) %>% 
+  summarise(Theta_pi = mean(value))
+
+windows = mt_fst[,c(1,2,3)]
+windows = unique(windows)
+windows = data.table(windows)
+setkey(windows, chrom, start, end)
+snps = div[,c(1,2,3)]
+colnames(snps) = c("chrom", "snp","snp2")
+snps = data.table(snps)
+setkey(snps, chrom, snp, snp2)
+obj = foverlaps(snps, windows, by.x = c("chrom", "snp", "snp2"), by.y = c("chrom", "start", "end"), type = "within", nomatch = 0)
+div = merge(div %>% rename(snp = start, snp2 = end), data.frame(obj), by.x = c("chrom", "snp", "snp2"), by.y = c("chrom", "snp", "snp2")) 
+div = merge(div, mt_annot, by.x = c("chrom", "start", "end"), by.y = c("V1","V2", "V3"))
+
+div = div %>% mutate(label2 = case_when(label %in% c("Alex", "Middleton") ~ "East", 
+                                        label %in% c("Paringa", "Mapourika") ~ "West", 
+                                        label %in% c("Selfe") ~ "Selfe"))
+mt_fst = mt_fst[!is.na(mt_fst$label2),]
+```
+
+
+```{r, fig.height=18, fig.width=16}
+ggplot(mt_fst,aes(label2, Fst, color = V4)) + geom_point(size =3) + scale_color_manual(values = brewPalette(n = 15)) + theme(axis.text.x = element_text(angle = 45, hjust= 1, vjust = 1)) + labs(color = "gene name")
+```
+
+
+```{r, fig.height=5, fig.width=26}
+pdf("../Figures/Mitochondrial_genome_Fst_perGene.pdf", height = 5, width = 26)
+ggplot(mt_fst,aes(label2, Fst, color = V4)) + geom_point(size =5) + scale_color_manual(values = brewPalette(n = 15)) + theme(axis.text.x = element_text(angle = 45, hjust= 1, vjust = 1)) + labs(color = "gene name") + facet_grid(~V4) + theme(strip.text = element_text(size = 15), axis.text.y = element_text(size = 12), axis.title.y = element_text(size = 15), axis.title.x = element_text(size = 15), plot.margin = margin(15, 35, 15, 15)) 
+dev.off()
+```
+
+
+```{r, fig.height=18, fig.width=16}
+ggplot(div, aes(label2, Theta_pi, fill = V4)) + geom_violin() + scale_fill_manual(values = brewPalette(n = 15))
+```
+
+
+```{r, fig.height=18, fig.width=16}
+
+mtcandidatesT = union(unique(term2gene$Kegg[term2gene$Kegg$KO %in% term2name$Kegg[grepl("mitochondri", term2name$Kegg$Name),]$KO,]$Gene), unique(slimdf[grepl("mitoch", slimdf$Term),]$Gene))
+
+merge(for_plots[for_plots$gene_name %in% mtcandidatesT,] %>% group_by(label) %>% summarise(Mt_related_Nuc_Fst = mean(Fst)), mt_fst %>% group_by(label) %>% summarise(mt_fst = mean(Fst))) %>% ggplot(aes(mt_fst, Mt_related_Nuc_Fst)) + geom_point() + geom_text(aes(label = label))
+```
+
+
+Create a pheatmap for every genes to make sure every gene reflects the same relationship
+
+```{r, fig.height=18, fig.width=16}
+
+mt_fst = read_delim("../FST/GenewiseFst.Hudson.mtfst.csv")
+mt_fst = cbind(mt_fst[,c(1,2,3)], mt_fst[,grepl("fst", colnames(mt_fst))])
+
+mt_fst = melt(mt_fst, id.vars = c("chrom", "start", "end")) %>% 
+  separate(variable, into = c("pool1", "pool2"), sep = ":") %>% mutate(pool1 = str_remove(pool1, ".mito.sorted.dedup")) %>% 
+  mutate(pool2 = str_remove(pool2, ".mito.sorted.dedup.fst")) %>% mutate(pool1 = str_remove(pool1, "20190830.B-")) %>% 
+  mutate(pool2 = str_remove(pool2, "20190830.B-")) %>% 
+  mutate(label = paste0(sapply(str_split(pool1, "_"), .subset, 1), "_", sapply(str_split(pool2, "_"), .subset, 1))) %>% 
+  separate(label, into = c("lake1", "lake2"), sep = "_") %>% 
+  mutate(lake1 = if_else(lake1 == "Alex", "Alexandrina", lake1), lake2 = if_else(lake2 == "Alex", "Alexandrina", lake2)) %>% 
+  mutate(label = paste0(lake1, "_", lake2)) %>% dplyr::select(-4,-5, -7,-8) %>% 
+  group_by(chrom, start, end, label) %>% 
+  summarise(Fst = mean(value))
+
+mt_fst = merge(mt_fst, mt_annot, by.x = c("chrom", "start", "end"), by.y = c("V1", "V2", "V3"), all = TRUE)
+mt_fst = mt_fst[mt_fst$V4 != "AT-rich",]
+
+mt_fst = mt_fst %>% separate(label, into = c("pool1", "pool2"), sep = "_") 
+nesteddf = mt_fst %>% dplyr::group_split(V4)
+nesteddf = lapply(nesteddf, function(x){ return(x %>% dplyr::select(-1,-2,-3,-7) %>% pivot_wider(names_from = pool1, values_from = Fst) %>% column_to_rownames("pool2") %>% as.matrix())})
+
+for (i in names(nesteddf)){
+  pheatmap(nesteddf[[i]], cluster_rows = F, cluster_cols = F)
+}
+```
+
+What proportion of the mt genome is actually differentiated
+
+```{r, fig.height=18, fig.width=16}
+
+mt_fst = read_delim("../FST/Queue.1SNPs.Mito.FST.csv")
+mt_fst = cbind(mt_fst[,c(1,2,3)], mt_fst[,grepl("fst", colnames(mt_fst))])
+
+mt_fst = melt(mt_fst, id.vars = c("chrom", "start", "end")) %>% 
+  separate(variable, into = c("pool1", "pool2"), sep = ":") %>% mutate(pool1 = str_remove(pool1, ".mito.sorted.dedup")) %>% 
+  mutate(pool2 = str_remove(pool2, ".mito.sorted.dedup.fst")) %>% mutate(pool1 = str_remove(pool1, "20190830.B-")) %>% 
+  mutate(pool2 = str_remove(pool2, "20190830.B-")) %>% 
+  mutate(label = paste0(sapply(str_split(pool1, "_"), .subset, 1), "_", sapply(str_split(pool2, "_"), .subset, 1))) %>% 
+  separate(label, into = c("lake1", "lake2"), sep = "_") %>% 
+  mutate(lake1 = if_else(lake1 == "Alex", "Alexandrina", lake1), lake2 = if_else(lake2 == "Alex", "Alexandrina", lake2)) 
+
+mt_fst = mt_fst[!is.na(mt_fst$value),]
+
+mt_fst = mt_fst %>% 
+  mutate(label = paste0(lake1, "_", lake2)) %>% dplyr::select(-4,-5, -7,-8) %>% 
+  group_by(chrom, start, end, label) %>% 
+  summarise(Fst = mean(value))
+
+mt_fst %>% filter(Fst > 0.11) %>% group_by(label) %>% summarise(count = n_distinct(start)) %>% mutate(prop = (count * 100)/15002) %>% filter(!label %in% c("Alexandrina_Alexandrina", "Middleton_Middleton", "Selfe_Selfe", "Paringa_Paringa", "Mapourika_Mapourika")) %>% mutate(label2 = case_when(label %in% c("Alexandrina_Paringa", "Alexandrina_Mapourika", "Middleton_Paringa", "Mapourika_Middleton") ~ "West vs East", label %in% c("Alexandrina_Selfe", "Middleton_Selfe") ~ "East vs Selfe", label %in% c("Mapourika_Selfe", "Paringa_Selfe") ~ "West vs Selfe", label == "Alexandrina_Middleton" ~ "East vs East",  label == "Mapourika_Paringa" ~ "West vs West")) %>% ggplot(aes(label2, prop)) + geom_point() + labs(y = "Proportion of the mitochondrial genome", x = "")
+```

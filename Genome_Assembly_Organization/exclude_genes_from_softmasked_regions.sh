@@ -1,0 +1,1 @@
+bedtools intersect -a /cluster/work/gdc/people/zajacn/Atriophallophorus_winterbourni/EBI/GCA_013407085.1/Sequence/WholeGenomeFasta/soft_masked_regions.bed -b genes.bed  -v > /cluster/work/gdc/people/zajacn/Atriophallophorus_winterbourni/EBI/GCA_013407085.1/Sequence/WholeGenomeFasta/soft_masked_regions_notINgenes.bed

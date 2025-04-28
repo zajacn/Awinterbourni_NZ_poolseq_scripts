@@ -1,0 +1,277 @@
+---
+  title:  "Pairwise FST"
+author: "Natalia Zajac"
+output:
+  html_document: 
+  highlight: pygments
+theme: sand
+code_folding: hide
+toc: yes
+toc_depth: 4
+editor_options: 
+  chunk_output_type: inline
+---
+
+Started on `r format(Sys.time(), "%Y-%m-%d %H:%M:%S")`
+
+
+```{r setup, include=FALSE}
+library(poolfstat)
+library(pheatmap)
+library(dplyr)
+library(cowplot)
+library(patchwork)
+library(readr)
+library(stringr)
+library(tidyverse)
+library(textshaping)
+library(ggpubr)
+library(ggrepel)
+
+source("../BayPass/baypass_utils.R")
+
+df = read_delim("../test.sync") # just for colnames
+poolnames = str_remove(sapply(str_split(colnames(df)[c(-1:-3)], "\\."), .subset, 2), "B-")
+
+pooldata = popsync2pooldata(
+  sync.file = "../combined.filtered.nomasked.sync",
+  poolsizes = c(rep(24,16)),
+  poolnames = poolnames,
+  nthreads = 1, min.maf = 0.0001
+)
+
+pooldatamt = popsync2pooldata(
+  sync.file = "../all_samples.mit.sync.filtered.sync",
+  poolsizes = c(rep(24,15)),
+  poolnames = poolnames[-13],
+  noindel = TRUE,
+  nlines.per.readblock = 1e+06,
+  nthreads = 1, min.maf = 0.0001
+)
+
+metadata = data.frame(pool = poolnames , lake = sapply(str_split(poolnames, "_"), .subset, 1)) %>% column_to_rownames("pool") %>% mutate(lake = if_else(lake == "Alex", "Alexandrina", lake))
+
+colors = list(lake = setNames(c("orange", "cornflowerblue","gold", "purple", "darkgreen"), unique(metadata$lake)))
+geneAnno = read_delim("../Atriophallophorus_winterbourni/EBI/GCA_013407085.1/Annotation/Genes/genes_annotation_byGene.txt")
+
+##Read in distance matrices
+dst = NULL
+for (i in list.files("../Distance_matrices/")){
+  distance = str_remove(str_remove(i, "tLCP_"), ".txt")
+  x = read.delim(file.path("../Distance_matrices", i), sep = " ")
+  x = x[rownames(x) %in% unique(metadata$lake),colnames(x) %in% unique(metadata$lake)]
+  dst[[distance]] = x
+}
+
+# Fst_gren_Nei = read_delim("Distance_matrices/PairwiseFst.Neifst-matrix.csv", delim = ",") %>% column_to_rownames("fst")
+# colnames(Fst_gren_Nei) = rownames(metadata)
+# rownames(Fst_gren_Nei) = rownames(metadata)
+
+Fst_gren_Hudson = read_delim("../FST/PairwiseFst.Hudsonfst-matrix.csv", delim = ",") %>% column_to_rownames("fst")
+colnames(Fst_gren_Hudson) = rownames(metadata)
+rownames(Fst_gren_Hudson) = rownames(metadata)
+Fst_gren_Hudson = Fst_gren_Hudson[-13,-13]
+
+Fst_gren_Hudson_mt = read_delim("../FST/PairwiseFst.Hudson.mtfst-matrix.csv", delim = ",") %>% column_to_rownames("fst")
+colnames(Fst_gren_Hudson_mt) = rownames(metadata[-13, , drop = FALSE])
+rownames(Fst_gren_Hudson_mt) = rownames(metadata[-13, , drop = FALSE])
+
+
+Fst_grendalf = read_delim("../FST/Popoolation2/Sliding_Fst_per_Lake/Fst_sliding.Grendalf.Pi.FET.C2.txt")
+
+omega_cov_matrix = read.table("../BayPass/Alexandrina_Mapourika_mat_omega.out", header = F) 
+omega_cov_matrix=cov2cor(as.matrix(omega_cov_matrix))
+colnames(omega_cov_matrix) = rownames(metadata)[-13]
+rownames(omega_cov_matrix) = rownames(metadata)[-13]
+
+omega_cov_matrix_mt = read.table("../BayPass/all_samples.mit.Alexandrina_Selfe_mat_omega.out", header = F) 
+omega_cov_matrix_mt=cov2cor(as.matrix(omega_cov_matrix_mt))
+colnames(omega_cov_matrix_mt) = rownames(metadata)[-13]
+rownames(omega_cov_matrix_mt) = rownames(metadata)[-13]
+```
+
+## Pairwise FST
+
+```{r, fig.height=5, fig.width=10}
+pairwisefst = compute.pairwiseFST(
+  pooldata.subset(pooldata, pool.index = c(1:12,14:16)),
+  method = "Anova",
+  min.cov.per.pool = -1,
+  max.cov.per.pool = 1e+06,
+  min.indgeno.per.pop = -1,
+  min.maf = -1,
+  output.snp.values = FALSE,
+  nsnp.per.bjack.block = 0,
+  verbose = TRUE
+)
+
+pairwisefstmt = compute.pairwiseFST(
+  pooldatamt,
+  method = "Anova",
+  min.cov.per.pool = -1,
+  max.cov.per.pool = 1e+06,
+  min.indgeno.per.pop = -1,
+  min.maf = -1,
+  output.snp.values = FALSE,
+  nsnp.per.bjack.block = 0,
+  verbose = TRUE
+)
+
+pheatmap(pairwisefst@PairwiseFSTmatrix, 
+         annotation_col = metadata[-13, , drop = FALSE], 
+         annotation_colors = colors, 
+         show_colnames = F, name = "Fst")
+```
+
+## Congruence between FST and distance matrices
+
+```{r, fig.height=5, fig.width=10}
+Fst = data.frame(pairwisefst@PairwiseFSTmatrix) %>% rownames_to_column("pool1") %>% pivot_longer(!pool1) %>% mutate(lake1 = sapply(str_split(pool1, "_"), .subset, 1), lake2 = sapply(str_split(name, "_"), .subset, 1)) %>% group_by(lake1, lake2) %>% mutate(lake1 = if_else(lake1 == "Alex", "Alexandrina", lake1), lake2 = if_else(lake2 == "Alex", "Alexandrina", lake2))  %>% dplyr::summarise(Fst = mean(value)) %>% pivot_wider(names_from = lake2, values_from = Fst) %>% column_to_rownames("lake1") %>% as.matrix() %>% replace(is.na(.), 0)
+
+Fstmt = data.frame(pairwisefstmt@PairwiseFSTmatrix) %>% rownames_to_column("pool1") %>% pivot_longer(!pool1) %>% mutate(lake1 = sapply(str_split(pool1, "_"), .subset, 1), lake2 = sapply(str_split(name, "_"), .subset, 1)) %>% group_by(lake1, lake2) %>% mutate(lake1 = if_else(lake1 == "Alex", "Alexandrina", lake1), lake2 = if_else(lake2 == "Alex", "Alexandrina", lake2))  %>% dplyr::summarise(Fst = mean(value)) %>% pivot_wider(names_from = lake2, values_from = Fst) %>% column_to_rownames("lake1") %>% as.matrix() %>% replace(is.na(.), 0)
+
+Fst_Hudson = data.frame(Fst_gren_Hudson) %>% rownames_to_column("pool1") %>% pivot_longer(!pool1) %>% mutate(lake1 = sapply(str_split(pool1, "_"), .subset, 1), lake2 = sapply(str_split(name, "_"), .subset, 1)) %>% group_by(lake1, lake2) %>% mutate(lake1 = if_else(lake1 == "Alex", "Alexandrina", lake1), lake2 = if_else(lake2 == "Alex", "Alexandrina", lake2)) %>% mutate(value = if_else(lake1 == lake2, 0, value)) %>% dplyr::summarise(Fst = mean(value)) %>% pivot_wider(names_from = lake2, values_from = Fst) %>% column_to_rownames("lake1") %>% as.matrix() %>% replace(is.na(.), 0)
+
+Fst_Hudson_mt = data.frame(Fst_gren_Hudson_mt) %>% rownames_to_column("pool1") %>% pivot_longer(!pool1) %>% mutate(lake1 = sapply(str_split(pool1, "_"), .subset, 1), lake2 = sapply(str_split(name, "_"), .subset, 1)) %>% group_by(lake1, lake2) %>% mutate(lake1 = if_else(lake1 == "Alex", "Alexandrina", lake1), lake2 = if_else(lake2 == "Alex", "Alexandrina", lake2)) %>% mutate(value = if_else(lake1 == lake2, 0, value)) %>% dplyr::summarise(Fst = mean(value)) %>% pivot_wider(names_from = lake2, values_from = Fst) %>% column_to_rownames("lake1") %>% as.matrix() %>% replace(is.na(.), 0)
+
+list_of_fst_matrices = list("IIS_Fst" = Fst, "IIS_Fst_mt" = Fstmt, "Hudson_Unbiased" = Fst_Hudson, "Hudson_Unbiased_mt" = Fst_Hudson_mt)
+
+all_cong = NULL
+for (x in names(list_of_fst_matrices)){
+  n = list_of_fst_matrices[[x]]
+  congruence = NULL
+  for (i in names(dst)){
+    cng = CADM.global(rbind(data.frame(n), data.frame(dst[[i]])[rownames(data.frame(n)), colnames(data.frame(n))]), 2, 5, nperm=99, make.sym=TRUE, weights=NULL, silent=FALSE)
+    congruence[[i]] = cng$congruence_analysis
+    }
+  congruence = bind_rows(congruence, .id = "Sample")
+  names = colnames(congruence)
+  congruence = data.frame(congruence)
+  rownames(congruence) = c("W", "Chi2", "Prob.perm")
+  colnames(congruence) = names
+  congruence = t(congruence) %>% data.frame() %>% rownames_to_column("Distance") %>% mutate(p_value = if_else(as.numeric(Prob.perm) > 0.05, "P-value > 0.05", "P-value < 0.05"), group = 1)
+  all_cong[[x]] = congruence
+}
+
+
+bind_rows(all_cong, .id = "Matrix_type") %>% ggplot(aes(as.integer(Distance), W, shape = p_value, group = Matrix_type, linetype= Matrix_type)) + geom_point(size = 3) + geom_line() + labs(x = "Distance", y = str_wrap("Congruence between genetic and geographic distance Kendall's coefficient of concordance (CADM)", width = 50)) + scale_shape_manual(values = c(19,21)) + labs(linetype = "Fst measurement") + scale_linetype_manual(values = c("longdash", "dotted", "twodash", "solid"))
+```
+
+
+## Pariwise Fst vs the best distance estimation
+
+```{r, fig.height=5, fig.width=10}
+Fst_sliding = Fst_grendalf %>% group_by(label) %>% summarise(sliding_window_Hudson_Fst = mean(Fst))
+
+Fst_pairwise_Hudson = Fst_gren_Hudson %>% rownames_to_column("pool1") %>% melt() %>% mutate(lake1 = sapply(str_split(pool1, "_"), .subset, 1), lake2 = sapply(str_split(variable, "_"), .subset, 1)) %>% group_by(lake1, lake2) %>% mutate(lake1 = if_else(lake1 == "Alex", "Alexandrina", lake1), lake2 = if_else(lake2 == "Alex", "Alexandrina", lake2))  %>% summarise(pairwise_Hudson_Fst = mean(value)) %>% mutate(label = paste0(lake1, "_", lake2)) %>% ungroup() %>% dplyr::select(label, pairwise_Hudson_Fst) %>% filter(label %in% unique(Fst_sliding$label))
+
+Fst_pairwise_Hudson_mt = Fst_gren_Hudson_mt %>% rownames_to_column("pool1") %>% melt() %>% mutate(lake1 = sapply(str_split(pool1, "_"), .subset, 1), lake2 = sapply(str_split(variable, "_"), .subset, 1)) %>% group_by(lake1, lake2) %>% mutate(lake1 = if_else(lake1 == "Alex", "Alexandrina", lake1), lake2 = if_else(lake2 == "Alex", "Alexandrina", lake2))  %>% summarise(pairwise_Hudson_Fst_mt = mean(value)) %>% mutate(label = paste0(lake1, "_", lake2)) %>% ungroup() %>% dplyr::select(label, pairwise_Hudson_Fst_mt) %>% filter(label %in% unique(Fst_sliding$label))
+
+# Fst_pairwise_poolfstat_Anova = data.frame(pairwisefst@PairwiseFSTmatrix) %>% rownames_to_column("pool1") %>% pivot_longer(!pool1) %>% mutate(lake1 = sapply(str_split(pool1, "_"), .subset, 1), lake2 = sapply(str_split(name, "_"), .subset, 1)) %>% replace(is.na(.), 0) %>% group_by(lake1, lake2) %>% mutate(lake1 = if_else(lake1 == "Alex", "Alexandrina", lake1), lake2 = if_else(lake2 == "Alex", "Alexandrina", lake2))  %>% summarise(whole_genome_Identity_In_State_Fst = mean(value)) %>% mutate(label = paste0(lake1, "_", lake2)) %>% ungroup() %>% dplyr::select(label, whole_genome_Identity_In_State_Fst) %>% filter(label %in% unique(Fst_sliding$label))
+
+# Fst_pairwise_poolfstat_Anova_mt = data.frame(pairwisefstmt@PairwiseFSTmatrix) %>% rownames_to_column("pool1") %>% pivot_longer(!pool1) %>% mutate(lake1 = sapply(str_split(pool1, "_"), .subset, 1), lake2 = sapply(str_split(name, "_"), .subset, 1)) %>% replace(is.na(.), 0) %>% group_by(lake1, lake2) %>% mutate(lake1 = if_else(lake1 == "Alex", "Alexandrina", lake1), lake2 = if_else(lake2 == "Alex", "Alexandrina", lake2))  %>% summarise(MT_Identity_In_State_Fst = mean(value)) %>% mutate(label = paste0(lake1, "_", lake2)) %>% ungroup() %>% dplyr::select(label, MT_Identity_In_State_Fst) %>% filter(label %in% unique(Fst_sliding$label))
+
+combined_Fst = Fst_sliding %>% left_join(Fst_pairwise_Hudson, by = "label") %>% left_join(Fst_pairwise_Hudson_mt, by = "label") %>% melt(id.vars = "label") 
+#%>% left_join(Fst_pairwise_poolfstat_Anova, by = "label") %>% left_join(Fst_pairwise_poolfstat_Anova_mt, by = "label") %>% melt(id.vars = "label") 
+
+
+distance = "../tLCP_1400.txt"
+distance = read.delim(distance, sep = " ")
+distance = distance[rownames(distance) %in% unique(metadata$lake),colnames(distance) %in% unique(metadata$lake)] %>% rownames_to_column() %>% melt()
+distance = distance[!duplicated(distance),]
+distance$label = paste0(distance$rowname, "_", distance$variable)
+colnames(distance) = c("lake1", "lake2", "distance", "label")
+
+
+sp1 = ggscatter(combined_Fst %>% filter(variable != "sliding_window_Hudson_Fst") %>% left_join(distance, by = "label") %>% mutate(color = case_when(label %in% c("Middleton_Selfe", "Alexandrina_Selfe") ~ "group1", label %in% c("Mapourika_Selfe", "Paringa_Selfe") ~ "group2", .default = "group3")) %>% filter(variable == "pairwise_Hudson_Fst"), x = "distance", y = "value", add = "reg.line", conf.int = TRUE) + theme(legend.position = "") + guides(color = guide_legend(ncol = 2)) + geom_label_repel(aes(label = label)) + stat_cor(method = "pearson", label.x = 0) + geom_point(aes(color = color)) + scale_color_manual(values = c("red", "yellow", "black")) + labs(x = "Distance", y = "Fst value") + facet_wrap(~variable, scales = "free", ncol = 2)
+
+sp2 = ggscatter(combined_Fst %>% filter(variable != "sliding_window_Hudson_Fst") %>% left_join(distance, by = "label") %>% mutate(color = case_when(label %in% c("Middleton_Selfe", "Alexandrina_Selfe") ~ "group1", label %in% c("Mapourika_Selfe", "Paringa_Selfe") ~ "group2", .default = "group3")) %>% filter(variable == "pairwise_Hudson_Fst_mt"), x = "distance", y = "value", add = "reg.line", conf.int = TRUE) + theme(legend.position = "") + guides(color = guide_legend(ncol = 2)) + geom_label_repel(aes(label = label)) + stat_cor(method = "pearson", label.x = 0, label.y = 1.2) + geom_point(aes(color = color)) + scale_color_manual(values = c("red", "yellow", "black")) + labs(x = "Distance", y = "Fst value") + facet_wrap(~variable, scales = "free", ncol = 2)
+
+sp1 = ggscatter(combined_Fst[!combined_Fst$label %in% c("Selfe_Selfe", "Middleton_Middleton", "Paringa_Paringa", "Mapourika_Mapourika", "Alexandrina_Alexandrina"),] %>% filter(variable != "sliding_window_Hudson_Fst") %>% left_join(distance, by = "label") %>% mutate(color = case_when(label %in% c("Middleton_Selfe", "Alexandrina_Selfe") ~ "group1", label %in% c("Mapourika_Selfe", "Paringa_Selfe") ~ "group2", .default = "group3")) %>% filter(variable == "pairwise_Hudson_Fst"), x = "distance", y = "value", add = "reg.line", conf.int = TRUE) + theme(legend.position = "") + guides(color = guide_legend(ncol = 2)) + geom_label_repel(aes(label = label)) + stat_cor(method = "pearson", label.x = 0) + geom_point(aes(color = color)) + scale_color_manual(values = c("red", "yellow", "black")) + labs(x = "Distance", y = "Fst value") + facet_wrap(~variable, scales = "free", ncol = 2)
+sp1 = sp1 + ggtitle("Pairwise Hudson FST", subtitle = "nuclear data")
+
+sp2 = ggscatter(combined_Fst[!combined_Fst$label %in% c("Selfe_Selfe", "Middleton_Middleton", "Paringa_Paringa", "Mapourika_Mapourika", "Alexandrina_Alexandrina"),] %>% filter(variable != "sliding_window_Hudson_Fst") %>% left_join(distance, by = "label") %>% mutate(color = case_when(label %in% c("Middleton_Selfe", "Alexandrina_Selfe") ~ "group1", label %in% c("Mapourika_Selfe", "Paringa_Selfe") ~ "group2", .default = "group3")) %>% filter(variable == "pairwise_Hudson_Fst_mt"), x = "distance", y = "value", add = "reg.line", conf.int = TRUE) + theme(legend.position = "") + guides(color = guide_legend(ncol = 2)) + geom_label_repel(aes(label = label)) + stat_cor(method = "pearson", label.x = 0, label.y = 1.2) + geom_point(aes(color = color)) + scale_color_manual(values = c("red", "yellow", "black")) + labs(x = "Distance", y = "Fst value") + facet_wrap(~variable, scales = "free", ncol = 2)
+sp2 = sp2 + ggtitle("Pairwise Hudson FST", subtitle = "mitochondrial data")
+
+sp1 /sp2 
+```
+
+```{r, fig.height=5, fig.width=10}
+
+colnames(Fst_gren_Hudson) = c("Alexandrina1", "Alexandrina2", "Alexandrina3", "Mapourika1", "Mapourika2", "Mapourika3", "Middleton1", "Middleton2", "Middleton3", "Paringa1", "Paringa2", "Paringa3", "Selfe1", "Selfe2", "Selfe3")
+rownames(Fst_gren_Hudson) = c("Alexandrina1", "Alexandrina2", "Alexandrina3", "Mapourika1", "Mapourika2", "Mapourika3", "Middleton1", "Middleton2", "Middleton3", "Paringa1", "Paringa2", "Paringa3", "Selfe1", "Selfe2", "Selfe3")
+
+p1 = ComplexHeatmap::pheatmap(as.matrix(Fst_gren_Hudson), annotation_col = metadata[-13, , drop = FALSE] , annotation_colors = colors, show_colnames = F, name = "Fst", breaks = seq(0.02, 0.1, length.out = 20), main = "Nuclear")
+
+colnames(Fst_gren_Hudson_mt) = c("Alexandrina1", "Alexandrina2", "Alexandrina3", "Mapourika1", "Mapourika2", "Mapourika3", "Middleton1", "Middleton2", "Middleton3", "Paringa1", "Paringa2", "Paringa3", "Selfe1", "Selfe2", "Selfe3")
+rownames(Fst_gren_Hudson_mt) = c("Alexandrina1", "Alexandrina2", "Alexandrina3", "Mapourika1", "Mapourika2", "Mapourika3", "Middleton1", "Middleton2", "Middleton3", "Paringa1", "Paringa2", "Paringa3", "Selfe1", "Selfe2", "Selfe3")
+
+p2 = ComplexHeatmap::pheatmap(as.matrix(Fst_gren_Hudson_mt), annotation_col = metadata[-13, , drop = FALSE] , annotation_colors = colors, show_colnames = F, name = "Fst_mt", breaks = seq(0, 1, length.out = 20), main = "Mitochondrial")
+p = p1 + p2
+```
+
+
+## PCA based on MAF {.tabset}
+
+### Nuclear 
+
+```{r, fig.height=5, fig.width=10}
+
+rc = read.delim("../FST/Popoolation2/combined.filtered.nomasked_rc")
+rc = rc %>% 
+  dplyr::mutate(across(starts_with("maa"), ~ as.numeric(sapply(str_split(., "/"), .subset,1))/as.numeric(sapply(str_split(., "/"), .subset,2)))) %>% 
+  dplyr::mutate(across(starts_with("mia"), ~ as.numeric(sapply(str_split(., "/"), .subset,1))/as.numeric(sapply(str_split(., "/"), .subset,2))))
+rc = rc[,c(26:37,39:41)]
+colnames(rc) = rownames(metadata)[-13]
+rc = t(as.matrix(rc))
+rc = rc[,colSums(rc) > 0]
+rc = rc[,colSums(rc > 0) >= 3] # choose only those SNPs where minor allele freq is not equal to 0 in at least 3 pools
+pc = prcomp(rc, center = TRUE, scale. = TRUE)
+rownames(pc$x) = c("Alexandrina1", "Alexandrina2", "Alexandrina3", "Mapourika1", "Mapourika2", "Mapourika3", "Middleton1", "Middleton2", "Middleton3", "Paringa1", "Paringa2", "Paringa3", "Selfe1", "Selfe2", "Selfe3")
+rownames(metadata) = c("Alexandrina1", "Alexandrina2", "Alexandrina3", "Mapourika1", "Mapourika2", "Mapourika3", "Middleton1", "Middleton2", "Middleton3", "Paringa1", "Paringa2", "Paringa3", "Paringa4", "Selfe1", "Selfe2", "Selfe3")
+p1 = pc$x %>% data.frame() %>% rownames_to_column("pool") %>% left_join(metadata[-13, , drop = FALSE] %>% rownames_to_column("pool"), by = "pool") %>% ggplot(aes(PC1, PC2, color = lake)) + geom_point(size = 3) + theme_classic() + scale_color_manual(values = colors$lake) + geom_label_repel(aes(label = pool)) + labs(x = "PC1 (11.24%)",y = "PC2 (8.25%)") + ggtitle("Nuclear DNA") #I know this from autoplot
+
+p1
+```
+
+### Mitochondrial
+
+```{r, fig.height=5, fig.width=10}
+
+rc = read.delim("../FST/Popoolation2/all_samples.mito.filtered_rc")
+rc = rc %>% 
+  dplyr::mutate(across(starts_with("maa"), ~ as.numeric(sapply(str_split(., "/"), .subset,1))/as.numeric(sapply(str_split(., "/"), .subset,2)))) %>% 
+  dplyr::mutate(across(starts_with("mia"), ~ as.numeric(sapply(str_split(., "/"), .subset,1))/as.numeric(sapply(str_split(., "/"), .subset,2))))
+rc = rc[,c(25:39)]
+colnames(rc) = rownames(metadata)[-13]
+rc = t(as.matrix(rc))
+rc = rc[,colSums(rc) > 0]
+rc = rc[,colSums(rc > 0) >= 3] # choose only those SNPs where minor allele freq is not equal to 0 in at least 3 pools
+pc = prcomp(rc, center = TRUE, scale. = TRUE)
+
+p2 = pc$x %>% data.frame() %>% rownames_to_column("pool") %>% left_join(metadata[-13, , drop = FALSE] %>% rownames_to_column("pool"), by = "pool") %>% ggplot(aes(PC1, PC2, color = lake)) + geom_point(size = 3) + theme_classic() + scale_color_manual(values = colors$lake) + geom_label_repel(aes(label = pool)) + labs(y = "PC2 (23.08%)",x = "PC1 (24.55%)" ) + ggtitle("Mitochondrial DNA") #I know this from autoplot
+
+p1 + p2 + plot_layout(guides = "collect")
+```
+
+## Covariance matrix from Treemix
+
+```{r, fig.height=5, fig.width=10}
+labels = c(metadata[-13,])
+ht = Heatmap(omega_cov_matrix, 
+        heatmap_legend_param = list(direction = "horizontal"),
+        row_names_gp = gpar(fontsize = 10),
+        row_split  = labels, 
+        column_split = labels,  
+        border = T, 
+        top_annotation = HeatmapAnnotation(empty = anno_empty(border = FALSE),
+                                           foo = anno_block(gp = gpar(fill = c("darkgreen", "gold", "orange", "purple", "cornflowerblue")),
+                                                            labels = c("Selfe", "Middleton", "Alexandrina", "Paringa","Mapourika"))), 
+        show_row_dend = F, 
+        show_column_names = F, 
+        circlize::colorRamp2(c(min(omega_cov_matrix), 0.9, max(omega_cov_matrix)), c("blue", "white", "red")),
+        name = "Similarity")
+
+draw(ht ,heatmap_legend_side = "bottom")
+
+```

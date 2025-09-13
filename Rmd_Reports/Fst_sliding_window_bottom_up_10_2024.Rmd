@@ -1,5 +1,5 @@
 ---
-title:  "Fst sliding analysis without Paringa Pool4"
+title:  "Fst sliding analysis  - analysis of divergent regions"
 author: "Natalia Zajac"
 output:
   html_document: 
@@ -414,23 +414,23 @@ x4 = x4 %>%
         value_list = str_split(values, ","),
         # Check if all required elements are present in the value_list
         category1 = dplyr::case_when(
-            all(required_west_vs_east %in% unlist(value_list)) ~ "West vs East",
+            all(required_west_vs_east %in% unlist(value_list)) ~ "West vs South Canterbury",
             values == "Alexandrina_Selfe,Mapourika_Selfe,Middleton_Selfe,Paringa_Selfe" ~ "Selfe vs all",
             values == "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Alexandrina_Middleton" ~ "Alexandrina vs all",
             values == "Alexandrina_Middleton,Mapourika_Middleton,Middleton_Selfe,Middleton_Paringa" ~ "Middleton vs all",
             values == "Alexandrina_Mapourika,Mapourika_Middleton,Mapourika_Paringa,Mapourika_Selfe" ~ "Mapourika vs all",
             values == "Alexandrina_Paringa,Mapourika_Paringa,Paringa_Selfe,Middleton_Paringa" ~ "Paringa vs all",
-            values == "Alexandrina_Middleton" ~ "East vs East",
-            values == "Mapourika_Paringa" ~ "West vs West",
+            values == "Alexandrina_Middleton" ~ "within South Canterbury",
+            values == "Mapourika_Paringa" ~ "within the West",
             values %in% c("Alexandrina_Mapourika", "Alexandrina_Paringa", "Alexandrina_Selfe", 
                           "Mapourika_Middleton", "Mapourika_Selfe", "Middleton_Paringa", 
-                          "Middleton_Selfe", "Paringa_Selfe") ~ "Two-lake-specific",
-            values == "Alexandrina_Selfe,Middleton_Selfe" ~ "Selfe vs East",
+                          "Middleton_Selfe", "Paringa_Selfe") ~ "between only two lakes",
+            values == "Alexandrina_Selfe,Middleton_Selfe" ~ "Selfe vs South Canterbury",
             values == "Mapourika_Selfe,Paringa_Selfe" ~ "Selfe vs West",
             TRUE ~ "Other"
         ), West_vs_East = dplyr::case_when(
       values == "Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Middleton_Paringa" ~ "Introgressing to Selfe from both",
-      values == "Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Mapourika_Selfe,Paringa_Selfe,Middleton_Paringa" ~ "Introgressing to Selfe from East",
+      values == "Alexandrina_Paringa,Alexandrina_Mapourika,Mapourika_Middleton,Mapourika_Selfe,Paringa_Selfe,Middleton_Paringa" ~ "Introgressing to Selfe from South Canterbury",
       values == "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Middleton_Selfe,Middleton_Paringa" ~ "Introgressing to Selfe from West",
       values %in%  c("Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Paringa,Middleton_Selfe,Paringa_Selfe,Middleton_Paringa") ~ "Introgressing into Selfe from Mapourika",
       values %in%  c("Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Selfe,Middleton_Selfe,Middleton_Paringa", "Alexandrina_Paringa,Alexandrina_Mapourika,Alexandrina_Selfe,Mapourika_Middleton,Mapourika_Paringa,Mapourika_Selfe,Middleton_Selfe,Middleton_Paringa") ~ "Introgressing into Selfe from Paringa", 
@@ -445,8 +445,8 @@ temp4 = merge(unique(for_plots[,c(4,5,19,21)]), x2, by = c("window","color"))
 
 temp3 = rbind(temp2,temp3,temp4)
 
-temp3$category1 = factor(temp3$category1, levels = c("All comparisons undifferentiated", "All comparisons differentiated","Alexandrina vs all", "Middleton vs all", "Selfe vs all", "Mapourika vs all", "Paringa vs all", "Two-lake-specific", "Selfe vs East", "Selfe vs West", "East vs East",  "West vs West", "West vs East", "Other"))
-temp3$West_vs_East = factor(temp3$West_vs_East, levels = c("Introgressing into Selfe from Alexandrina", "Introgressing into Selfe from Middleton", "Introgressing into Selfe from Paringa", "Introgressing into Selfe from Mapourika", "Introgressing to Selfe from East", "Introgressing to Selfe from West", "Introgressing to Selfe from both", ""))
+temp3$category1 = factor(temp3$category1, levels = c("All comparisons undifferentiated", "All comparisons differentiated","Alexandrina vs all", "Middleton vs all", "Selfe vs all", "Mapourika vs all", "Paringa vs all", "between only two lakes", "Selfe vs South Canterbury", "Selfe vs West", "within South Canterbury",  "within the West", "West vs South Canterbury", "Other"))
+temp3$West_vs_East = factor(temp3$West_vs_East, levels = c("Introgressing into Selfe from Alexandrina", "Introgressing into Selfe from Middleton", "Introgressing into Selfe from Paringa", "Introgressing into Selfe from Mapourika", "Introgressing to Selfe from South Canterbury", "Introgressing to Selfe from West", "Introgressing to Selfe from both", ""))
 
 temp3$window_length = as.numeric(sapply(str_split(temp3$window, "-"), .subset,3)) - as.numeric(sapply(str_split(temp3$window, "-"), .subset,2))
 
@@ -477,7 +477,7 @@ p2 = temp3 %>%
           panel.border = element_blank(), legend.position = "", legend.text = element_text(size = 14)) + scale_fill_manual(values = c("#84BF96FF", "#6DBD57FF" ,"#7F9D55FF","#F57C7CFF" ,"#E42622FF" ,"#C2AAC2FF", "#DE9E83FF", "#9D7BBAFF" ,"#886F4C" ,"#F3E587FF", "#0086ED","#D157A0")) +
     geom_label_repel(aes(label = perc), position = position_stacknudge(vjust = 0.5, x = 0.8), max.overlaps = 30, size = 9, show.legend = FALSE, color = "white")
 
-p3 = temp3 %>% filter(category1 == "West vs East") %>% mutate(West_vs_East = if_else(West_vs_East != "", West_vs_East, "West vs East Other")) %>% distinct(West_vs_East, window, window_length) %>% group_by(West_vs_East) %>% dplyr::summarise(window_count = n_distinct(window), length = sum(window_length))  %>% mutate(perc = (length*100)/173173889) %>% mutate(perc = if_else(perc > 0.05, paste0(as.character(round(perc,2)),"%"), "")) %>% ggplot(aes(x = "", y = window_count, fill = West_vs_East)) + geom_bar(stat = "identity", width = 1,color = "#0086ED") +
+p3 = temp3 %>% filter(category1 == "West vs South Canterbury") %>% mutate(West_vs_East = if_else(West_vs_East != "", West_vs_East, "West vs South Canterbury Other")) %>% distinct(West_vs_East, window, window_length) %>% group_by(West_vs_East) %>% dplyr::summarise(window_count = n_distinct(window), length = sum(window_length))  %>% mutate(perc = (length*100)/173173889) %>% mutate(perc = if_else(perc > 0.05, paste0(as.character(round(perc,2)),"%"), "")) %>% ggplot(aes(x = "", y = window_count, fill = West_vs_East)) + geom_bar(stat = "identity", width = 1,color = "#0086ED") +
     coord_polar(theta = "y") +
     labs(y = "", x = "", fill = "West vs East") +
     theme_bw() +
@@ -492,13 +492,13 @@ p = p1 + p2 + p3 +
     plot_layout(guides = 'collect')
 
 for_fst = temp3 %>% 
-  mutate(label2 = case_when(label %in% c("Alexandrina_Paringa", "Alexandrina_Mapourika", "Middleton_Paringa", "Mapourika_Middleton") ~ "West vs East", 
-                            label %in% c("Alexandrina_Selfe", "Middleton_Selfe") ~ "East vs Selfe", 
+  mutate(label2 = case_when(label %in% c("Alexandrina_Paringa", "Alexandrina_Mapourika", "Middleton_Paringa", "Mapourika_Middleton") ~ "West vs South Canterbury", 
+                            label %in% c("Alexandrina_Selfe", "Middleton_Selfe") ~ "South Canterbury vs Selfe", 
                             label %in% c("Mapourika_Selfe", "Paringa_Selfe") ~ "West vs Selfe", 
-                            label == "Alexandrina_Middleton" ~ "East vs East",  label == "Mapourika_Paringa" ~ "West vs West"),
+                            label == "Alexandrina_Middleton" ~ "within South Canterbury",  label == "Mapourika_Paringa" ~ "within the West"),
          Comparison = if_else(
-           (category1 == "West vs East" & West_vs_East %in% c("", "Introgressing into Selfe from Alexandrina", "Introgressing into Selfe from Middleton", "Introgressing into Selfe from Paringa", "Introgressing into Selfe from Mapourika", "Introgressing to Selfe from East", "Introgressing to Selfe from West", "Introgressing to Selfe from both")), paste(category1,West_vs_East), category1)) 
-for_fst$Comparison = factor(for_fst$Comparison, levels = c("All comparisons undifferentiated", "All comparisons differentiated","Alexandrina vs all", "Middleton vs all", "Selfe vs all", "Mapourika vs all", "Paringa vs all", "Two-lake-specific", "Selfe vs East", "Selfe vs West", "East vs East",  "West vs West", "West vs East ", "West vs East Introgressing into Selfe from Alexandrina", "West vs East Introgressing into Selfe from Middleton", "West vs East Introgressing into Selfe from Paringa", "West vs East Introgressing into Selfe from Mapourika", "West vs East Introgressing to Selfe from East", "West vs East Introgressing to Selfe from West", "West vs East Introgressing to Selfe from both", "Other"))
+           (category1 == "West vs South Canterbury" & West_vs_East %in% c("", "Introgressing into Selfe from Alexandrina", "Introgressing into Selfe from Middleton", "Introgressing into Selfe from Paringa", "Introgressing into Selfe from Mapourika", "Introgressing to Selfe from South Canterbury", "Introgressing to Selfe from West", "Introgressing to Selfe from both")), paste(category1,West_vs_East), category1)) 
+for_fst$Comparison = factor(for_fst$Comparison, levels = c("All comparisons undifferentiated", "All comparisons differentiated","Alexandrina vs all", "Middleton vs all", "Selfe vs all", "Mapourika vs all", "Paringa vs all", "between only two lakes", "Selfe vs South Canterbury", "Selfe vs West", "within South Canterbury",  "within the West", "West vs South Canterbury ", "West vs South Canterbury Introgressing into Selfe from Alexandrina", "West vs South Canterbury Introgressing into Selfe from Middleton", "West vs South Canterbury Introgressing into Selfe from Paringa", "West vs South Canterbury Introgressing into Selfe from Mapourika", "West vs South Canterbury Introgressing to Selfe from South Canterbury", "West vs South Canterbury Introgressing to Selfe from West", "West vs South Canterbury Introgressing to Selfe from both", "Other"))
 
 
 p4 = for_fst %>% 
@@ -510,42 +510,103 @@ pdf("../Figures/Whole_genome_subdivided.pdf", width = 18, height = 8)
 p
 dev.off()
 
-pdf("../Figures/Whole_genome_subdivided_FST.pdf", width = 16, height = 6)
+pdf("../Figures/Whole_genome_subdivided_FST.pdf", width = 16, height = 7)
 p4
 dev.off()
+```
+
+
+
+lets try a bit differently
+
+
+```{r, fig.height=5, fig.width=11}
+p1 = temp3 %>% mutate(category2 = if_else(category1 == "All comparisons undifferentiated", "Undifferentiated", "Differentiated in at least\none pairwise comparison")) %>% distinct(category2, window, window_length) %>%
+    group_by(category2) %>% 
+    dplyr::summarise(window_count = n_distinct(window), length = sum(window_length)) %>% mutate(perc = (length * 100)/sum(length)) %>% 
+    mutate(perc = if_else(perc > 10, paste0(as.character(round(perc,0)),"%"), "")) %>% 
+    ggplot(aes(x = "", y = window_count, fill = category2)) + geom_bar(stat = "identity", width = 1) + 
+    coord_polar(theta = "y", start = 1.75) +
+    labs(y = "", x = "", fill = "Comparison") +
+    theme_bw() +
+    theme(axis.ticks = element_blank(), 
+          axis.text = element_blank(), 
+          panel.grid = element_blank(), 
+          panel.border = element_blank(),legend.text = element_text(size = 11), legend.position = "bottom", legend.title.position = "top") + scale_fill_manual(values = c("salmon","azure4")) +
+    geom_label_repel(aes(label = perc),position = position_stacknudge(vjust = 0.5, x = 0.8), max.overlaps = 30, size = 9, show.legend = FALSE,color = "white")  + guides(fill = guide_legend(ncol = 1)) + labs(fill = "Genomic regions")
+
+
+p2 = temp3 %>% filter(category1 != "All comparisons differentiated" & category1 != "All comparisons undifferentiated") %>% mutate(category2 = if_else(category1 == "West vs South Canterbury", "in West vs South Canterbury\ncomparisons", "Other")) %>% distinct(category2, window, window_length) %>% 
+    group_by(category2) %>% 
+    dplyr::summarise(window_count = n_distinct(window), length = sum(window_length)) %>% mutate(perc = (length*100)/173173889) %>% mutate(perc = if_else(perc > 0.5, paste0(as.character(round(perc,1)),"%"), "")) %>% 
+    ggplot(aes(x = "", y = window_count, fill = category2)) + geom_bar(stat = "identity", width = 1) + 
+    coord_polar(theta = "y", start = 1.9) +
+    labs(y = "", x = "", fill = "Comparison") +
+    theme_bw() +
+    theme(axis.ticks = element_blank(), 
+          axis.text = element_blank(), 
+          panel.grid = element_blank(), 
+          panel.border = element_blank(), legend.position = "bottom", legend.text = element_text(size = 11), legend.title.position = "top") + scale_fill_manual(values = c("#0086ED","salmon")) +
+    geom_label_repel(aes(label = perc), position = position_stacknudge(vjust = 0.5, x = 0.8), max.overlaps = 30, size = 9, show.legend = FALSE, color = "white") + guides(fill = guide_legend(ncol = 1)) + labs(fill = "Divergent genomic regions")
+
+p3 = temp3 %>% filter(category1 == "West vs South Canterbury") %>% mutate(West_vs_East = if_else(West_vs_East %in% c("", "Introgressing into Selfe from Alexandrina", "Introgressing into Selfe from Mapourika", "Introgressing into Selfe from Middleton", "Introgressing into Selfe from Paringa"), "Other", West_vs_East)) %>% distinct(West_vs_East, window, window_length) %>% group_by(West_vs_East) %>% dplyr::summarise(window_count = n_distinct(window), length = sum(window_length))  %>% mutate(perc = (length*100)/173173889) %>% mutate(perc = if_else(perc > 0.05, paste0(as.character(round(perc,2)),"%"), "")) %>% ggplot(aes(x = "", y = window_count, fill = West_vs_East)) + geom_bar(stat = "identity", width = 1,color = "#0086ED") +
+    coord_polar(theta = "y") +
+    labs(y = "", x = "", fill = "West vs East") +
+    theme_bw() + scale_fill_manual(values = c("darkorange", "plum", "darkcyan", "#A6CEE3FF")) +
+    geom_label_repel(aes(label = perc), position = position_stacknudge(vjust = 0.5, x = 0.8), max.overlaps = 30, size = 9, show.legend = FALSE, color = "white") + labs(fill = "Divergent between West vs South Canterbury") + guides(fill = guide_legend(ncol = 1)) +
+    theme(axis.ticks = element_blank(), 
+          axis.text = element_blank(), 
+          panel.grid = element_blank(), 
+          panel.border = element_blank(), legend.text = element_text(size = 11), legend.position = "bottom", legend.title.position = "top" )
+
+p = p1 + p2 + p3 
+
+pdf("../Figures/Whole_genome_subdivided.v2.pdf", width = 14, height = 6)
+p
+dev.off()
+
+
+for_fst = temp3 %>% mutate(
+  label2 = case_when(label %in% c("Alexandrina_Paringa", "Alexandrina_Mapourika", "Middleton_Paringa", "Mapourika_Middleton") ~ "West vs South Canterbury", 
+                     label %in% c("Alexandrina_Selfe", "Middleton_Selfe") ~ "South Canterbury vs Selfe",  label %in% c("Mapourika_Selfe", "Paringa_Selfe") ~ "West vs Selfe", label == "Alexandrina_Middleton" ~ "within South Canterbury",  
+                     label == "Mapourika_Paringa" ~ "within the West"), 
+  Comparison = case_when(category1 == "All comparisons undifferentiated" ~ "Undifferentiated", category1 != "All comparisons undifferentiated" & category1 != "West vs South Canterbury" ~ "Differentiated in at least\none pairwise comparison", category1 == "West vs South Canterbury" & !(West_vs_East %in% c("Introgressing to Selfe from South Canterbury", "Introgressing to Selfe from West", "Introgressing to Selfe from both")) ~ "West vs South Canterbury", West_vs_East %in% c("Introgressing to Selfe from South Canterbury", "Introgressing to Selfe from West", "Introgressing to Selfe from both") ~ paste0(category1,"\n",West_vs_East))) 
+for_fst$Comparison = factor(for_fst$Comparison, levels = c("Undifferentiated", "Differentiated in at least\none pairwise comparison", "West vs South Canterbury", "West vs South Canterbury\nIntrogressing to Selfe from both", "West vs South Canterbury\nIntrogressing to Selfe from South Canterbury", "West vs South Canterbury\nIntrogressing to Selfe from West"))
+
+
+p4 = for_fst %>% 
+    ggplot(aes(label2, Fst, fill = Comparison)) + 
+    geom_violin()  + 
+    scale_fill_manual(values = c("azure4", "salmon" , "#A6CEE3FF", "darkorange", "plum","darkcyan")) + theme(axis.text.x = element_text(size = 13, angle = 45, hjust = 1, vjust = 1), plot.margin = margin(10, 10, 10, 50), axis.text.y = element_text(size = 11),legend.text = element_text(size = 11), legend.key.size = unit(1, "cm"), legend.key = element_rect(colour = NA, fill = NA)) + labs(x = "") + guides(fill=guide_legend(ncol=1)) + ylab(expression(F[ST])) + labs(fill = "Genomic regions")
+
+pdf("../Figures/Whole_genome_subdivided_FST.2.pdf", width = 16, height = 6)
+p4
+dev.off()
+
 ```
 
 Manhattan plot
 
 ```{r, fig.height=8, fig.width=10}
 xxx = for_plots %>% mutate(east = case_when(
-  window %in% temp3[temp3$West_vs_East == "Introgressing to Selfe from West",]$window ~ "Introgressing from West", 
-  window %in% temp3[temp3$West_vs_East == "Introgressing to Selfe from East",]$window ~ "Introgressing from East", 
-  window %in% temp3[temp3$West_vs_East == "Introgressing to Selfe from both",]$window ~ "Introgressing from both", 
-  window %in% temp3[temp3$West_vs_East == "Introgressing into Selfe from Paringa",]$window ~ "Introgressing from Paringa", 
-  window %in% temp3[temp3$West_vs_East == "Introgressing into Selfe from Middleton",]$window ~ "Introgressing from Middleton", 
-  window %in% temp3[temp3$West_vs_East == "Introgressing into Selfe from Mapourika",]$window ~ "Introgressing from Mapourika", 
-  window %in% temp3[temp3$West_vs_East == "Introgressing into Selfe from Alexandrina",]$window ~ "Introgressing from Alexandrina", 
-  window %in% temp3[temp3$West_vs_East == "" & temp3$category1 == "West vs East",]$window ~ "West vs East other",
-  .default = "Rest")) %>% 
-  filter(label %in% c("Alexandrina_Selfe", "Middleton_Selfe")) %>% arrange(chrom,start, end)
+  window %in% for_fst[for_fst$Comparison == "West vs South Canterbury\nIntrogressing to Selfe from South Canterbury",]$window ~ "Introgressing from SC", 
+  window %in% for_fst[for_fst$Comparison == "West vs South Canterbury\nIntrogressing to Selfe from both",]$window ~ "Introgressing from both", 
+  window %in% for_fst[for_fst$Comparison == "West vs South Canterbury\nIntrogressing to Selfe from West",]$window ~ "Introgressing from West",
+  .default = "Rest")) %>% arrange(chrom,start, end)
 
-xxx$east = factor(xxx$east, levels = c("Introgressing from Alexandrina", "Introgressing from Middleton", "Introgressing from Paringa", "Introgressing from Mapourika", "Introgressing from East" ,"Introgressing from West", "Introgressing from both", "West vs East other", "Rest"))
+xxx$east = factor(xxx$east, levels = c("Introgressing from both", "Introgressing from SC", "Introgressing from West","Rest"))
+xxx = xxx[xxx$label %in% c("Alexandrina_Selfe", "Middleton_Selfe", "Paringa_Selfe", "Mapourika_Selfe"),]
+xxx$label = factor(xxx$label, levels = c("Alexandrina_Selfe", "Middleton_Selfe", "Paringa_Selfe", "Mapourika_Selfe"))
 
-pdf("../Figures/Manhattan_WestvsEast_EasttoSelfe.pdf", height = 5, width = 15)
+pdf("../Figures/Manhattan_WestvsEast.v2.pdf", height = 9, width = 9)
 
 ggplot(xxx,aes(window,Fst)) + 
   geom_point(data = xxx[xxx$east == "Rest",], aes(window,Fst), color = "grey") + 
-  geom_point(data = xxx[xxx$east == "Introgressing from Alexandrina",], aes(window,Fst, color = east), size = 3) + 
-  geom_point(data = xxx[xxx$east == "Introgressing from Middleton",], aes(window,Fst, color = east), size = 3) + 
-  geom_point(data = xxx[xxx$east == "Introgressing from Paringa",], aes(window,Fst, color = east), size = 3) +
-  geom_point(data = xxx[xxx$east == "Introgressing from Mapourika",], aes(window,Fst, color = east), size = 3) +
-  geom_point(data = xxx[xxx$east == "West vs East other",], aes(window,Fst, color = east), size = 3) + 
-  geom_point(data = xxx[xxx$east == "Introgressing from East",], aes(window,Fst, color = east), size = 3) +
-  geom_point(data = xxx[xxx$east == "Introgressing from both",], aes(window,Fst, color = east), size = 3)  + 
-  geom_point(data = xxx[xxx$east == "Introgressing from West",], aes(window,Fst, color = east), size = 3) + 
+  geom_point(data = xxx[xxx$east == "Introgressing from both",], aes(window,Fst, color = east), size = 2) + 
+  geom_point(data = xxx[xxx$east =="Introgressing from SC",], aes(window,Fst, color = east), size = 2) + 
+  geom_point(data = xxx[xxx$east == "Introgressing from West",], aes(window,Fst, color = east), size = 2) + 
   theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) + 
-  facet_wrap(~label, ncol = 1) + scale_color_manual(values = c("#74D055FF" ,"#94D840FF" ,"#B8DE29FF", "#DCE318FF", "#A6CEE3FF","plum","darkorange","darkcyan")) + 
+  facet_wrap(~label, ncol = 1) + scale_color_manual(values = c("darkorange","plum","darkcyan")) + 
   labs(color = "West vs East into Selfe", y = "FST", x = "window") + 
   theme(axis.title.y = element_text(size = 15), strip.text = element_text(size = 15), axis.title.x =  element_text(size = 15))
 
@@ -716,7 +777,7 @@ Incoming_to_Selfe_West=Incoming_to_Selfe_West[!duplicated(Incoming_to_Selfe_West
 
 BDMI = setdiff(setdiff(setdiff(setdiff(West_East_outliers, list_of_outliers$Alexandrina_Selfe), list_of_outliers$Mapourika_Selfe), list_of_outliers$Paringa_Selfe), list_of_outliers$Middleton_Selfe)
 
-colors2 = setNames(c("plum", "darkcyan", "darkorange", "darkgrey"), c("Introgressing from East", "Introgressing from West", "Introgressing from both", "Rest"))
+colors2 = setNames(c("plum", "darkcyan", "darkorange", "darkgrey"), c("Introgressing from South Canterbury", "Introgressing from West", "Introgressing from both", "Rest"))
 ```
 
 ## SNPs incoming to Selfe {.tabset}
@@ -726,20 +787,28 @@ colors2 = setNames(c("plum", "darkcyan", "darkorange", "darkgrey"), c("Introgres
 ```{r, fig.height=5, fig.width=11}
 
 temp = for_plots[,c(1,2,3, 10,11,12,13,14,19)] %>% 
-  mutate(color = case_when(window %in% Incoming_to_Selfe_East ~ "Introgressing from East", 
+  mutate(color = case_when(window %in% Incoming_to_Selfe_East ~ "Introgressing from South Canterbury", 
                            window %in% Incoming_to_Selfe_West ~ "Introgressing from West",
                            window %in% BDMI ~ "Introgressing from both",
                            .default = "Rest")) %>% 
-  melt(id.vars = c("chrom", "start", "end", "color", "window"))
+  reshape2::melt(id.vars = c("chrom", "start", "end", "color", "window"))
 
-p1 = temp[temp$color != "Rest",] %>% mutate(variable = str_remove(variable, "_ThetaPi"), 
-                     variable2 = case_when(variable %in% c("Alexandrina", "Middleton") ~ "East",
+temp = temp[temp$color != "Rest",] %>% mutate(variable = str_remove(variable, "_ThetaPi"), 
+                     variable2 = case_when(variable %in% c("Alexandrina", "Middleton") ~ "South Canterbury",
                                            variable %in% c("Mapourika", "Paringa") ~ "West", 
-                                           .default = "Selfe")) %>%
-  ggplot(aes(factor(variable2, levels = c("East", "Selfe", "West")), value, fill = color)) + 
-  geom_violin() + theme(legend.position = "top") +
-  stat_summary(fun.y=median, geom="point", size=2, color="red", position=position_dodge(width=0.9)) + 
-  labs(x = "", y = "Nucleotide diversity (Theta_pi)", fill= "Fst outlier") + scale_fill_manual(values = colors2)
+                                           .default = "Selfe"))
+lev = combn(unique(temp$color), 2, simplify = FALSE) 
+p1 = ggplot(temp,aes(color,
+           value, fill = color)) +
+    geom_violin() +
+    theme(legend.position = "top") +
+    stat_summary(fun = median, geom = "point", size = 2, color = "red",
+                 position = position_dodge(width = 0.9)) +
+    labs(x = "", y = "Nucleotide diversity (Theta_pi)", fill = F[ST] ~ "outlier")  +
+    stat_compare_means(aes(group = color),
+                       comparisons = lev,  # defined above
+                       method = "t.test",        # or "t.test"
+                       label = "p.signif") + scale_fill_manual(values = colors2) + theme(legend.position = "top", axis.text.x = element_blank()) + facet_grid(~factor(variable2, levels = c("South Canterbury", "Selfe", "West")))
 pdf("../Figures/Nucleotide_diversity_WestvsEast.pdf", height = 5, width = 8)
 p1
 dev.off()
@@ -919,25 +988,25 @@ desc = desc[!is.na(names(desc))]
 rbind(combined[combined$Count > 1 & combined$category %in% c("Differentiated West-East", "Differentiated Selfe-West"),], combined[combined$category %in% c("Differentiated Selfe-East"),])
 # subset_combined = subset_combined[!subset_combined$Description %in% c("hydrolase activity, acting on carbon-nitrogen (but not peptide) bonds, in nitriles"),]
 subset_combined = subset_combined %>% mutate(Term = if_else(is.na(Term), "Not annotated", Term))
-subset_combined = subset_combined %>% mutate(category = if_else(category == "Introgressing from West", "from West", category))
-subset_combined$category = factor(subset_combined$category, levels = c("Introgressing from East","from West", "Introgressing from both"))
+subset_combined = subset_combined %>% mutate(category = case_when(category == "Introgressing from West"~ "from West", category == "Introgressing from East"~ "Introgressing from SC", .default = category))
+subset_combined$category = factor(subset_combined$category, levels = c("Introgressing from SC","from West", "Introgressing from both"))
 subset_combined$Term = factor(subset_combined$Term, levels = c("Not annotated", unique(subset_combined$Term)[!grepl("Not annotated", unique(subset_combined$Term))]))
 
 p1 = subset_combined %>% 
-  ggplot(aes(GeneRatio,str_wrap(Description, 50), size = Count,color = pvalue)) + 
+  ggplot(aes(GeneRatio,str_wrap(Description, 35), size = Count,color = pvalue)) + 
   geom_point() + 
   facet_grid(category~GO, scales = "free",space = "free_y") + labs(y = "") + theme_bw() +
   theme(axis.text.y = element_text(size = 9), strip.text = element_text(size = 11)) +
   theme(plot.margin = unit(c(0, 0, 0, 0), "cm"), legend.position = "right",axis.text.y = element_blank(), legend.text = element_text(size = 11)) + scale_size_continuous(breaks = c(1, 2, 3))
 
 p2 = ggplot(subset_combined) +
-    geom_col(aes(y = str_wrap(Description, 50), x = 1, fill = Term), position = "fill") + facet_grid(category~., scales = "free",space = "free_y") + 
+    geom_col(aes(y = str_wrap(Description, 35), x = 1, fill = Term), position = "fill") + facet_grid(category~., scales = "free",space = "free_y") + 
     theme_bw()  + 
     theme(axis.text.x = element_blank(), 
           axis.title.x = element_blank(), 
           axis.ticks.x = element_blank(), 
           panel.background = element_blank(), 
-          plot.background = element_blank(), strip.text = element_blank(), axis.title.y = element_blank(), plot.margin = unit(c(0, 0, 0, 0), "cm"), axis.text.y = element_text(size = 11),legend.text = element_text(size = 11)) + scale_fill_manual(values = c("white",brewPalette(n = 21))) + guides(fill=guide_legend(ncol=1))
+          plot.background = element_blank(), strip.text = element_blank(), axis.title.y = element_blank(), plot.margin = unit(c(0, 0, 0, 0), "cm"), axis.text.y = element_text(size = 11,margin = margin(t = 10, b = 10)),legend.text = element_text(size = 11)) + scale_fill_manual(values = c("white",brewPalette(n = 21))) + guides(fill=guide_legend(ncol=1))
 
 p = p2 + p1 +
     plot_layout(widths = c(.05, 1.1), ncol = 2, guides = "collect") & theme(legend.position = 'right') 
@@ -954,7 +1023,7 @@ p = p2 + p1 +
 # plot_grid(p, p3, ncol = 2, rel_widths = c(3, 1))
 
 #write_delim(data.frame(GOslim = unique(combined$Term)[!is.na(unique(combined$GOslim))]), "../Sex_specific_genes/GO_terms_WEdiff_of_interest.txt")
-pdf("../Figures/GO_results.pdf", height = 9.5, width = 15)
+pdf("../Figures/GO_results.pdf", height = 10, width = 11)
 p
 dev.off()
 ```
@@ -1287,7 +1356,7 @@ BDMI = setdiff(setdiff(setdiff(setdiff(West_East_outliers, list_of_outliers$Alex
 
 list_of_genes_of_interest = list("Introgressing from East" = Incoming_to_Selfe_East, "Introgressing from West" = Incoming_to_Selfe_West, "Introgressing from both" = BDMI)
 
-colors2 = setNames(c("plum", "darkcyan", "darkorange", "darkgrey"), c("Introgressing from East", "Introgressing from West", "Introgressing from both", "Rest"))
+colors2 = setNames(c("plum", "darkcyan", "darkorange", "darkgrey"), c("Introgressing from South Canterbury", "Introgressing from West", "Introgressing from both", "Rest"))
 ```
 
 ## SNPs incoming to Selfe {.tabset}
@@ -1650,3 +1719,4 @@ mt_fst = mt_fst %>%
 
 mt_fst %>% filter(Fst > 0.11) %>% group_by(label) %>% summarise(count = n_distinct(start)) %>% mutate(prop = (count * 100)/15002) %>% filter(!label %in% c("Alexandrina_Alexandrina", "Middleton_Middleton", "Selfe_Selfe", "Paringa_Paringa", "Mapourika_Mapourika")) %>% mutate(label2 = case_when(label %in% c("Alexandrina_Paringa", "Alexandrina_Mapourika", "Middleton_Paringa", "Mapourika_Middleton") ~ "West vs East", label %in% c("Alexandrina_Selfe", "Middleton_Selfe") ~ "East vs Selfe", label %in% c("Mapourika_Selfe", "Paringa_Selfe") ~ "West vs Selfe", label == "Alexandrina_Middleton" ~ "East vs East",  label == "Mapourika_Paringa" ~ "West vs West")) %>% ggplot(aes(label2, prop)) + geom_point() + labs(y = "Proportion of the mitochondrial genome", x = "")
 ```
+

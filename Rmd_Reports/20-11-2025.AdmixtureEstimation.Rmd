@@ -1,0 +1,239 @@
+---
+  title:  "Admixture - poolfstat"
+author: "Natalia Zajac"
+output:
+  html_document: 
+  highlight: pygments
+theme: sand
+code_folding: hide
+toc: yes
+toc_depth: 4
+editor_options: 
+  chunk_output_type: inline
+---
+
+Started on `r format(Sys.time(), "%Y-%m-%d %H:%M:%S")`
+
+
+```{r setup, include=FALSE}
+library(poolfstat)
+library(pheatmap)
+library(dplyr)
+library(cowplot)
+library(patchwork)
+library(readr)
+library(stringr)
+library(tidyverse)
+library(textshaping)
+library(ggpubr)
+library(ggrepel)
+
+source("../BayPass/baypass_utils.R")
+
+#Load pool data
+df = read_delim("../test.sync") # just for colnames
+poolnames = str_remove(sapply(str_split(colnames(df)[c(-1:-3)], "\\."), .subset, 2), "B-")
+
+pooldata = popsync2pooldata(
+  sync.file = "../combined.filtered.nomasked.sync",
+  poolsizes = c(rep(24,16)),
+  poolnames = poolnames,
+  nthreads = 1, min.maf = 0.0001
+)
+pooldata = pooldata.subset(pooldata, pool.index = c(1:12,14:16))
+
+#Set metadata
+metadata = data.frame(pool = poolnames , lake = sapply(str_split(poolnames, "_"), .subset, 1)) %>% column_to_rownames("pool") %>% mutate(lake = if_else(lake == "Alex", "Alexandrina", lake))
+
+colors = list(lake = setNames(c("orange","orange","orange", "cornflowerblue","cornflowerblue","cornflowerblue","gold","gold","gold", "purple","purple","purple", "darkgreen","darkgreen","darkgreen"), rownames(metadata)[-13]))
+
+#Calculate Fstats
+Fstats<-compute.fstats(pooldata,nsnp.per.bjack.block = 1000, computeDstat = TRUE, return.F2.blockjackknife.samples = TRUE)
+```
+
+## Testing 
+
+```{r setup, include=FALSE}
+#Plot Heterozygosity
+plot(Fstats@heterozygosities$`bjack mean`, ylab="Heterozygosity", xaxt="n", xlab="", pch="",las=3)
+axis(1,1:pooldata@npools, rownames(Fstats@heterozygosities), las=3)
+ci=cbind(Fstats@heterozygosities$`bjack mean`-1.96*Fstats@heterozygosities$`bjack s.e.`, Fstats@heterozygosities$`bjack mean`+1.96*Fstats@heterozygosities$`bjack s.e.`)
+tmp<-sapply(1:pooldata@npools, f<-function(z){
+  abline(v=z,lty=3,col="grey")
+  arrows(z,ci[z,1],z,ci[z,2],angle = 90, code=3, length=0.05, lwd=1.5, col=colors$lake[rownames(Fstats@heterozygosities)[z]])
+})
+
+#Evaluation of scaffold trees using compare.fitted.fstats
+scaf.pop = find.tree.popset(Fstats)
+scaf.pop.trees=list()
+for(i in 1:scaf.pop$n.sets){
+  scaf.pop.trees[[i]]=list()
+  tmp.njtree<-rooted.njtree.builder(pop.sel = scaf.pop$pop.sets[i,], fstats = Fstats,verbose=FALSE)
+  scaf.pop.trees[[i]][["njtree"]]<-tmp.njtree$best.rooted.tree
+  tmp.graph=generate.graph.params(tmp.njtree$best.rooted.tree@graph,Fstats,verbose=F)
+  scaf.pop.trees[[i]][["fitgraph"]]<-fit.graph(tmp.graph,verbose=FALSE)
+  rm(tmp.njtree,tmp.graph)
+}
+for(i in 1:scaf.pop$n.sets){
+  cat("\nScaffold set:",i,"\n")
+  cat("\tRooted NJ tree\n")
+  tmp.comp<-compare.fitted.fstats(Fstats,
+                                  fitted.graph = scaf.pop.trees[[i]][["njtree"]],
+                                  n.worst.stats = 1)
+  cat("\tRooted fit graph tree\n")
+  tmp.comp<-compare.fitted.fstats(Fstats,
+                                  fitted.graph = scaf.pop.trees[[i]][["fitgraph"]],
+                                  n.worst.stats = 1)
+}
+
+#Excluding Selfe  - support for the previously known tree
+pop.admix=c("Selfe_Pool1", "Selfe_Pool2", "Selfe_Pool3")
+scaf.pop.WE = find.tree.popset(Fstats, excluded.pops = pop.admix)
+
+#Manual
+scaf.tree=rbind(c("W","R",""),
+c("E","R",""),
+c("Alex","E",""),
+c("Middleton","E",""),
+c("Paringa","W",""),
+c("Mapourika","W",""),
+c("Alex_CAMP2ndWP","Alex",""),
+c("Alex_MW","Alex",""),
+c("Alex_NE","Alex",""),
+c("Middleton_Pool1","Middleton",""),
+c("Middleton_Pool2","Middleton",""),
+c("Middleton_Pool3","Middleton",""),
+c("Paringa_Pool1","Paringa",""),
+c("Paringa_Pool2","Paringa",""),
+c("Paringa_Pool3","Paringa",""),
+c("Mapourika_Jetty_Pool1","Mapourika",""),
+c("Mapourika_Mix_Pool2","Mapourika",""),
+c("Mapourika_Otto_Pool3","Mapourika",""))
+scaf.tree.params = generate.graph.params(scaf.tree, fstats = Fstats)
+scaf.tree.fit = fit.graph(scaf.tree.params,drift.scaling = TRUE,compute.ci = TRUE)
+plot(scaf.tree.fit)
+add.p=add.leaf(scaf.tree.fit, leaf.to.add = "Selfe_Pool2", fstats = Fstats, verbose = F)
+add.p.delta.bic=format(sort(add.p$bic-min(add.p$bic))[2],digits = 3)
+add.p.comp.fit=compare.fitted.fstats(Fstats,add.p$best.fitted.graph,n.worst.stats = 0)
+add.p.worst.fit=add.p.comp.fit[which.max(abs(add.p.comp.fit$`Z--score`)),]
+
+add.p=add.leaf(add.p$best.fitted.graph, leaf.to.add = "Selfe_Pool3", fstats = Fstats, verbose = F)
+add.p.delta.bic=format(sort(add.p$bic-min(add.p$bic))[2],digits = 3)
+add.p.comp.fit=compare.fitted.fstats(Fstats,add.p$best.fitted.graph,n.worst.stats = 0)
+add.p.worst.fit=add.p.comp.fit[which.max(abs(add.p.comp.fit$`Z--score`)),]
+
+add.p=add.leaf(add.p$best.fitted.graph, leaf.to.add = "Selfe_Pool1", fstats = Fstats, verbose = F)
+add.p.delta.bic=format(sort(add.p$bic-min(add.p$bic))[2],digits = 3)
+add.p.comp.fit=compare.fitted.fstats(Fstats,add.p$best.fitted.graph,n.worst.stats = 0)
+add.p.worst.fit=add.p.comp.fit[which.max(abs(add.p.comp.fit$`Z--score`)),]
+
+plot(add.p$best.fitted.graph)
+
+#Use graph.builder to add all at once
+cleangrid<-function(x){n=ncol(x);x[apply(x,1,f<-function(y){length(unique(y))==n}),n:1]}
+
+pops.to.include<-expand.grid(c("Selfe_Pool1","Selfe_Pool2","Selfe_Pool3"),c("Selfe_Pool1","Selfe_Pool2","Selfe_Pool3")) %>% as.matrix() %>% cleangrid()
+
+#exploring and evaluating the graphs
+for(i in 1:nrow(pops.to.include)){
+  cat("##########################################\n")
+  cat("Inclusion Order:",pops.to.include[i,],"\n")
+  tmp.graph<-graph.builder(scaf.tree.fit,leaves.to.add = pops.to.include[i,],
+                           fstats=Fstats,verbose=F)
+  #number of graphs within Dbic<6 (default)
+  cat("\tNumber Of Graphs:",tmp.graph$n.graphs,"\n")
+  #min BIC
+  cat("\tMin BIC:",min(tmp.graph$bic),"\n")
+  #worst fitted fstats (best fitting graph)
+  cat("\tWorst fstats fit:\n")
+  tmp.comp.fit=compare.fitted.fstats(Fstats,tmp.graph$best.fitted.graph,
+                                     n.worst.stats = 0)
+  print(tmp.comp.fit[which.max(abs(tmp.comp.fit$`Z--score`)),])
+}
+
+permutations <- function(x) {
+  n <- length(x)
+  if (n == 1){out<-x}else{
+    out <- NULL
+    for (i in 1:n){out <- rbind(out, cbind(x[i], permutations(x[-i])))}
+    }
+  return(out)
+  }
+##
+pops.to.include<-permutations(c("Paringa_Pool1","Middleton_Pool1","Selfe_Pool1"))
+#exploring and evaluating the graphs
+for(i in 1:nrow(pops.to.include)){
+  cat("##########################################\n")
+  cat("Inclusion Order:",pops.to.include[i,],"\n")
+  tmp.graph<-graph.builder(scaf.tree.fit,leaves.to.add = pops.to.include[i,],
+  fstats=Fstats,verbose=F)
+#number of graphs within Dbic<6 (default)
+  cat("\tNumber Of Graphs:",tmp.graph$n.graphs,"\n")
+  cat("\tMin BIC:",min(tmp.graph$bic),"\n")
+  #worst fitted fstats (best fitting graph)
+  cat("\tWorst fstats fit:\n")
+  tmp.comp.fit=compare.fitted.fstats(Fstats,tmp.graph$best.fitted.graph, n.worst.stats = 0)
+  print(tmp.comp.fit[which.max(abs(tmp.comp.fit$`Z--score`)),])
+}
+
+#Look at the F4 stats
+f4stats = Fstats@f4.values %>% data.frame() %>% rownames_to_column() %>% separate(rowname, into = c("g1", "g2"), sep = ";") %>% separate("g1", into = c("A", "B"), sep = ",") %>% separate("g2", into = c("C", "D"), sep = ",")
+f4stats$A = sapply(str_split(f4stats$A, "_"), .subset, 1)
+f4stats$B = sapply(str_split(f4stats$B, "_"), .subset, 1)
+f4stats$C = sapply(str_split(f4stats$C, "_"), .subset, 1)
+f4stats$D = sapply(str_split(f4stats$D, "_"), .subset, 1)
+f4stats %>% group_by(A,B,C,D) %>% summarise(mean(Estimate), mean(bjack.mean), mean(bjack.s.e.), Z.score = mean(Z.score)) %>% filter(Z.score > 3) %>% ungroup() %>%  filter(pmap_lgl(select(., A,B,C,D), ~ length(unique(na.omit(c(...)))) == 4))
+```
+
+## Final admixture graph  - Figure 2D
+
+```{r}
+#Final decision on admixture tree
+#Build using most distinct populations and start from there
+scaf.tree=rbind(c("Alexandrina","R",""),
+c("Mapourika","R",""),
+c("Alex_CAMP2ndWP","Alexandrina",""),
+c("Alex_MW","Alexandrina",""),
+c("Alex_NE","Alexandrina",""),
+c("Mapourika_Jetty_Pool1","Mapourika",""),
+c("Mapourika_Mix_Pool2","Mapourika",""),
+c("Mapourika_Otto_Pool3","Mapourika",""))
+scaf.tree.params = generate.graph.params(scaf.tree, fstats = Fstats)
+scaf.tree.fit = fit.graph(scaf.tree.params,drift.scaling = TRUE,compute.ci = TRUE)
+plot(scaf.tree.fit)
+
+#Calculate pairwise Fst and order pools according to the Fst values
+remaining = poolnames[c(-1:-6,-13)]
+pairwisefst = compute.pairwiseFST(pooldata,
+  method = "Anova",
+  min.cov.per.pool = -1,
+  max.cov.per.pool = 1e+06,
+  min.indgeno.per.pop = -1,
+  min.maf = -1,
+  output.snp.values = FALSE,
+  nsnp.per.bjack.block = 0,
+  verbose = TRUE)
+vals <- pairwisefst@values
+vals=vals %>% rownames_to_column() %>% separate(rowname, into = c("pool1", "pool2"), sep = ";")
+pops <- unique(c(vals$pool1, vals$pool2))
+fst.mat <- matrix(0, nrow=length(pops), ncol=length(pops), dimnames = list(pops,pops))
+
+for(i in seq_len(nrow(vals))){
+  p1 <- as.character(vals$pool1[i]); p2 <- as.character(vals$pool2[i]); f <- vals$Fst[i]
+  fst.mat[p1,p2] <- f; fst.mat[p2,p1] <- f
+}
+minDistToAnchors <- sapply(remaining, function(x) min(fst.mat[x, c("Alex_CAMP2ndWP","Alex_MW","Alex_NE","Mapourika_Jetty_Pool1","Mapourika_Mix_Pool2","Mapourika_Otto_Pool3")], na.rm=TRUE))
+order_by_minDist <- names(sort(minDistToAnchors, decreasing = FALSE))  
+order_by_minDist   
+
+#Build a graph adding those pools keeping only graph with BIC < 6
+gb <- graph.builder(
+  x = scaf.tree.fit,                 # initial graph.params object (or fitted.graph)
+  leaves.to.add = order_by_minDist,
+  fstats = Fstats,
+  heap.dbic = 6,                # keep graphs within +6 BIC units of best
+  max.heap.size = 50,
+  verbose = TRUE
+)
+
+```

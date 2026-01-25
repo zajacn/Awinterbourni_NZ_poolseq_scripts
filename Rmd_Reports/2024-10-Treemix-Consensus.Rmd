@@ -32,21 +32,20 @@ library(popcorn)
 library(pheatmap)
 library(ComplexHeatmap)
 library(cowplot)
-source("../Treemix/Tree_Space_Analysis_Consensus/plotting_funcs.R")
+source("../../lausanne_postdoc/jokela_lab_info/Treemix/Tree_Space_Analysis_Consensus/plotting_funcs.R")
 
-poolnames = read.csv("../Treemix/Tree_Space_Analysis_Consensus/pops.lst.txt", sep = " ", header = F)
+poolnames = read.csv("../../lausanne_postdoc/jokela_lab_info/Treemix/Tree_Space_Analysis_Consensus/pops.lst.txt", sep = " ", header = F)
 metadata = data.frame(pool = poolnames$V1 , lake = sapply(str_split(poolnames$V1, "_"), .subset, 1)) %>% column_to_rownames("pool") %>% mutate(lake = if_else(lake == "Alex", "Alexandrina", lake))
 
 colors = list(lake = setNames(c("orange", "cornflowerblue","gold", "purple", "darkgreen"), unique(metadata$lake)))
 colors$pool = setNames(c(rep("orange",3), rep("cornflowerblue", 3), rep("gold", 3), rep("purple", 4), rep("darkgreen", 3)), poolnames$V1)
 
-
 #Read Tree
 all_trees = NULL
 p_values = NULL
-for (i in list.files("../Treemix/whole_genome_split_out/", pattern = ".treeout.gz")[c(-18,-19)]){
+for (i in list.files("../../lausanne_postdoc/jokela_lab_info/Treemix/whole_genome_split_out/", pattern = ".treeout.gz")[c(-18,-19)]){
   name = str_remove(str_remove(i, "random_sample_without_replacement_"), ".treeout.gz")
-  tree = read.table(file.path("../Treemix/whole_genome_split_out", i), skip = 1)
+  tree = read.table(file.path("../../lausanne_postdoc/jokela_lab_info/Treemix/whole_genome_split_out", i), skip = 1)
   tree$migration = seq(1,nrow(tree),1)
   if (nrow(tree[grepl("<", tree$V4),]) >= 1){
   tree[grepl("<", tree$V4),]$V4 = 0.001
@@ -85,7 +84,7 @@ tree = merge(merge(part3, part1, by = "V5"), part2, by = "V6")
 
 
 #Read in the tree structure
-treemixobj = read_treemix("../Treemix/whole_genome_split_out/random_sample_without_replacement_081")
+treemixobj = read_treemix("../../lausanne_postdoc/jokela_lab_info/Treemix/whole_genome_split_out/random_sample_without_replacement_081")
 ```
 
 # {.tabset}
@@ -121,7 +120,7 @@ data = merge(p$data, metadata %>% rownames_to_column("pop"), by = "pop")
 p = p + geom_point(data = data, aes(x,y,color = lake), size = 2) + 
   scale_color_manual(values = colors$lake) + 
   theme(legend.text = element_text(size = 10), 
-        legend.title = element_text(size = 15), 
+        legend.title = element_text(size = 10), 
         legend.justification = "top") + 
   guides(color = guide_legend(override.aes = list(size = 5))) + 
   theme(legend.key.height=unit(2,"line")) + 
@@ -171,23 +170,108 @@ for (i in names(pies_incoming)) {
   p <- inset(p, test, width = size_factor_incoming, height = size_factor_incoming, hjust = 0.001)
 }
 
-p$data$pop = c("Middleton3","Middleton1","Middleton2", "Alexandrina3", "Alexandrina2", "Alexandrina1", "Selfe2","Selfe1","Selfe3", "Mapourika2","Mapourika1","Mapourika3","Paringa2" , "Paringa1","Paringa3")
 
 empty_pie <- ggplot(data = data.frame(x = c(1,1), y = c(1,1), type = c("Outgoing","Incoming")), aes(x = factor(1), y = 1)) +
   geom_bar(stat = "identity", fill = "white", color = "black", width = 1) +
   coord_polar(theta = "y") + facet_grid(~factor(type, levels = c("Outgoing","Incoming"))) + 
-  theme(strip.text = element_text(size = 25))  + 
+  theme(strip.text = element_text(size = 15))  + 
   theme_classic() +
   theme(axis.line = element_blank(),
         axis.text = element_blank(),
         axis.ticks = element_blank(),
         plot.title = element_text(hjust = 0.5, color = "#666666"), 
-        strip.text = element_text(size = 10), 
-        legend.text = element_text(size = 10), 
+        strip.text = element_text(size = 8), 
+        legend.text = element_text(size = 8), 
         legend.position = "top", guides(fill=guide_legend(ncol=2))) + labs(x = "", y = "") 
-p = p + annotation_custom(ggplotGrob(empty_pie), xmin = 0.01, xmax = 0.016, 
-                          ymin = 0, ymax = 0.3)
-pdf("../figures_11042025/Treemix.pdf", height=6, width=8)
+p = p + annotation_custom(ggplotGrob(empty_pie), xmin = 0.009, xmax = 0.016, 
+                          ymin = 0.78, ymax = 1.00)
 p
+```
+
+## Plot on a map - Figure 2C
+
+```{r , fig.height=6, fig.width=8, warning=FALSE}
+
+coords <- data.frame(
+  pop = c("Alexandrina", "Middleton", "Paringa", "Selfe", "Mapourika"),
+  lat = c(-43.95, -44.28, -43.7, -43.24, -43.32),
+  lon = c(170.46, 169.84, 169.4, 171.5, 170.18),
+  color = c("orange", "gold", "purple", "darkgreen", "cornflowerblue")
+)
+
+inc= tree[grepl("Selfe", tree$V5), c(1,2,6)]
+colnames(inc) = c("V6", "V5", "source")
+out = tree[grepl("Selfe", tree$V6), c(1,2,5)]
+colnames(out) = c("V6", "V5", "source")
+
+mig = rbind(inc,out) %>% mutate(V6 = sapply(str_split(V6, "_"), .subset,1)) %>% mutate(V5 = sapply(str_split(V5, "_"), .subset,1)) %>% group_by(V6, V5) %>% summarise(strength = mean(source))
+
+mig[mig$V6 == "Alex",]$V6 = "Alexandrina"
+mig[mig$V5 == "Alex",]$V5 = "Alexandrina"
+
+mig_xy <- mig %>%
+  left_join(coords, by = c("V5" = "pop")) %>%
+  rename(x = lon, y = lat) %>%
+  left_join(coords, by = c("V6" = "pop")) %>%
+  rename(xend = lon, yend = lat)
+
+
+nz <- ne_countries(scale = "medium",
+                   country = "New Zealand",
+                   returnclass = "sf")
+
+south_island <- st_crop(
+  nz,
+  xmin = 167, xmax = 173,
+  ymin = -45, ymax = -42.5
+)
+
+pdf("../Figures/TreeMix_as_a_Map.pdf", height = 6, width = 6)
+ggplot() +
+    # subtle basemap
+    geom_sf(data = south_island,
+            fill = "grey95",
+            color = "grey70",
+            linewidth = 0.2) +
+    
+    # migration arrows
+    geom_curve(
+        data = mig_xy,
+        aes(x = x, y = y,
+            xend = xend, yend = yend,
+            size = strength,color = V5),
+        curvature = 0.35,              
+        arrow = arrow(type = "closed",
+                      length = unit(0.3, "cm")),
+        alpha = 0.9
+    ) +
+    
+    # population points
+    geom_point(
+        data = coords,
+        aes(lon, lat),
+        shape = 21,
+        fill = "white",
+        color = "black",
+        size = 3,
+        stroke = 1
+    ) + geom_label_repel(data = coords, aes(lon, lat, label= pop), nudge_y = 1) +
+    
+    scale_size(range = c(0.6, 3), guide = "none") +
+    scale_color_manual(
+        values = c("orange", "cornflowerblue", "gold", "purple", "darkgreen")
+    ) + 
+    coord_sf(
+        xlim = c(167, 173),
+        ylim = c(-45, -42.5),
+        expand = FALSE
+    ) +
+    
+    theme_void() + labs(colour = "Source Lake") + 
+  theme_bw() + 
+  theme(legend.position = "") + 
+  labs(x = "", y = "")
 dev.off()
+
+
 ```

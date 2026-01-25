@@ -1,0 +1,72 @@
+---
+title:  "Synonymous vs nonsynonymous SNPs in Mito genome"
+author: "Natalia Zajac"
+output:
+  html_document: 
+  highlight: pygments
+  theme: sand
+  code_folding: hide
+  toc: yes
+  toc_depth: 4
+  editor_options: 
+  chunk_output_type: inline
+---
+
+Started on `r format(Sys.time(), "%Y-%m-%d %H:%M:%S")`
+
+
+```{r setup, include=FALSE}
+library(poolfstat)
+library(pheatmap)
+library(dplyr)
+library(cowplot)
+library(patchwork)
+library(readr)
+library(stringr)
+library(tidyverse)
+library(textshaping)
+library(ggpubr)
+library(ggrepel)
+
+source("../BayPass/baypass_utils.R")
+
+df = read_delim("../test.sync") # just for colnames
+poolnames = str_remove(sapply(str_split(colnames(df)[c(-1:-3)], "\\."), .subset, 2), "B-")
+
+pooldatamt = popsync2pooldata(
+    sync.file = "../all_samples.mit.sync.filtered.sync",
+    poolsizes = c(rep(24,15)),
+    poolnames = poolnames[-13],
+    noindel = TRUE,
+    nlines.per.readblock = 1e+06,
+    nthreads = 1, min.maf = 0.0001
+)
+mito = data.frame(pooldatamt@refallele.readcount)
+colnames(mito) = pooldatamt@poolnames
+mito = cbind(data.frame(pooldatamt@snp.info), mito)
+
+Mhap_SNPs = mito[mito$Paringa_Pool1 == 0 & mito$Paringa_Pool2 == 0 & mito$Paringa_Pool3 == 0 & mito$Mapourika_Jetty_Pool1 == 0 & mito$Mapourika_Mix_Pool2 == 0 & mito$Mapourika_Otto_Pool3 == 0 & mito$Selfe_Pool1 == 0 & mito$Selfe_Pool2 == 0 & mito$Selfe_Pool3 == 0 & mito$Alex_CAMP2ndWP != 0 & mito$Alex_MW != 0 & mito$Alex_NE != 0 & mito$Middleton_Pool1 != 0 & mito$Middleton_Pool2 != 0 & mito$Middleton_Pool3 != 0,c(1,2,3,4)]
+write_delim(Mhap_SNPs, "/Users/nataliazajac/snpEff/Mhap/mt.Mhap.bed")
+
+
+Whap_CAhap_SNPs = mito[mito$Paringa_Pool1 != 0 & mito$Paringa_Pool2 != 0 & mito$Paringa_Pool3 != 0 & mito$Mapourika_Jetty_Pool1 != 0 & mito$Mapourika_Mix_Pool2 != 0 & mito$Mapourika_Otto_Pool3 != 0 & mito$Selfe_Pool1 != 0 & mito$Selfe_Pool2 != 0 & mito$Selfe_Pool3 != 0 & mito$Alex_CAMP2ndWP == 0 & mito$Alex_MW == 0 & mito$Alex_NE == 0 & mito$Middleton_Pool1 == 0 & mito$Middleton_Pool2 == 0 & mito$Middleton_Pool3 == 0,c(1,2,3,4)]
+write_delim(Whap_CAhap_SNPs, "/Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhap.bed")
+
+#in snpeff folder 
+#python scripts/variants_to_vcf.py /Users/nataliazajac/snpEff/Mhap/mt.Mhap.bed /Users/nataliazajac/snpEff/Mhap/mt.Mhap.vcf
+#java -Xmx4g -jar snpEff.jar ann -v ASM1340708v1 /Users/nataliazajac/snpEff/Mhap/mt.Mhap.vcf > /Users/nataliazajac/snpEff/Mhap/mt.Mhapannot.vcf
+#python scripts/variants_to_vcf.py /Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhap.bed /Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhap.vcf
+#java -Xmx4g -jar snpEff.jar ann -v ASM1340708v1 /Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhap.vcf > /Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhapannot.vcf
+
+Mhap = read.delim("/Users/nataliazajac/snpEff/Mhap/snpEff_genes.txt", skip = 1)
+WCAhap = read.delim("/Users/nataliazajac/snpEff/WCAhap/snpEff_genes.txt", skip = 1)
+all = rbind(Mhap[,c(1,7:9)]  %>% reshape2::melt(id.vars = c("X.GeneName")) %>% mutate(hap = "M haplotype"),
+WCAhap[,c(1,8:11)] %>% reshape2::melt(id.vars = c("X.GeneName")) %>% mutate(hap = "W and CA haplotype"))
+all$variable = gsub("_", " ", str_remove(all$variable, "variants_effect_"))
+all$X.GeneName = toupper(all$X.GeneName)
+
+pdf("../Figures/MitoGenesVariants.pdf", height = 4, width = 8)
+all %>% group_by(X.GeneName, variable) %>% summarise(value = sum(value)) %>% ggplot(aes(value,X.GeneName , fill = variable)) + geom_col(position = "dodge") + labs(y = "Gene Name", x="Number of SNPs",fill = "Annotation") + ggtitle("MT variants between M and W/CA haplotypes") + theme(axis.title.x = element_text(size = 15), axis.text.x = element_text(size = 15), axis.title.y = element_text(size = 15), axis.text.y = element_text(size = 15), legend.text = element_text(size = 15), legend.title = element_text(size = 15)) + scale_x_sqrt() + scale_fill_manual(values = c("orange4", "chartreuse", "dodgerblue", "deeppink4"))
+dev.off()
+
+```

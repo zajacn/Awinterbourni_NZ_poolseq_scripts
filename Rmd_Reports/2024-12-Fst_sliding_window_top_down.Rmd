@@ -1,0 +1,659 @@
+---
+title:  "Fst sliding analysis"
+author: "Natalia Zajac"
+output:
+  html_document: 
+  highlight: pygments
+theme: sand
+code_folding: hide
+toc: yes
+toc_depth: 4
+editor_options: 
+  chunk_output_type: inline
+---
+
+Started on `r format(Sys.time(), "%Y-%m-%d %H:%M:%S")`
+
+```{r setup, include=FALSE}
+library(poolfstat)
+library(pheatmap)
+library(dplyr)
+library(cowplot)
+library(patchwork)
+library(readr)
+library(stringr)
+library(tidyverse)
+library(textshaping)
+library(ggVennDiagram)
+library(ComplexHeatmap)
+library(data.table)
+library(ezRun)
+library(scales)
+library(GSEABase)
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+library(ggrepel)
+
+Fst_grendalf = read_delim("../FST/Popoolation2/Sliding_Fst_per_Lake/Fst_sliding.Grendalf.Pi.FET.C2.txt")
+
+df = read_delim("../test.sync") # just for colnames
+poolnames = str_remove(sapply(str_split(colnames(df)[c(-1:-3)], "\\."), .subset, 2), "B-")
+metadata = data.frame(pool = poolnames , lake = sapply(str_split(poolnames, "_"), .subset, 1)) %>% column_to_rownames("pool") %>% mutate(lake = if_else(lake == "Alex", "Alexandrina", lake))
+
+colors = list(lake = setNames(c("orange", "cornflowerblue","gold", "purple", "darkgreen"), unique(metadata$lake)))
+geneAnno = read_delim("../Atriophallophorus_winterbourni/EBI/GCA_013407085.1/Annotation/Genes/genes_annotation_byGene.txt")
+
+genes = data.table(geneAnno[,c(6,8,9)])
+colnames(genes) = c("Chr", "start", "end")
+setkey(genes, Chr, start, end)
+
+snps = Fst_grendalf[,c(1,2,3)] %>% unique() 
+snps = data.table(snps)
+setkey(snps, chrom, start, end)
+obj = foverlaps(snps, genes, by.x = c("chrom", "start", "end"), 
+                by.y = c("Chr", "start", "end"), type = "within", nomatch = 0)
+obj = merge(data.frame(obj), geneAnno[,c(3,6,8,9)], by.x = c("chrom", "start", "end"), by.y = c("seqid", "start", "end"), all = TRUE)
+Fst_grendalf = merge(Fst_grendalf, obj %>% select(-2,-3) , by.x = c("chrom", "start", "end"), by.y = c("chrom", "i.start", "i.end"), all.x = TRUE) %>% replace(is.na(.), "")
+Fst_grendalf$window = paste0(Fst_grendalf$chrom, "-", Fst_grendalf$start, "-", Fst_grendalf$end)
+
+
+library(GO.db)
+library(enrichR)
+library(clusterProfiler)
+term2gene = NULL
+term2gene[['BP']] = geneAnno[,c(3,12)] %>% filter(!is.na(`GO BP`)) %>%
+    separate_rows(`GO BP`, sep = "; ") %>%
+    dplyr::rename(Term = `GO BP`, Gene = gene_name) %>% dplyr::select(c(Term,Gene))
+term2gene[['MF']] = geneAnno[,c(3,13)] %>% filter(!is.na(`GO MF`)) %>%
+    separate_rows(`GO MF`, sep = "; ") %>%
+    dplyr::rename(Term = `GO MF`, Gene = gene_name) %>% dplyr::select(c(Term,Gene))
+term2gene[['CC']] = geneAnno[,c(3,14)] %>% filter(!is.na(`GO CC`)) %>%
+    separate_rows(`GO CC`, sep = "; ") %>%
+    dplyr::rename(Term = `GO CC`, Gene = gene_name) %>% dplyr::select(c(Term,Gene))
+
+term2name= NULL
+term2name[["BP"]] = data.frame(Term = term2gene$BP$Term, Name = sapply(term2gene$BP$Term, function(x){Term(x)[[1]]}))
+term2name[["MF"]] = data.frame(Term = term2gene$MF$Term, Name = sapply(term2gene$MF$Term, function(x){Term(x)[[1]]}))
+term2name[["CC"]] = data.frame(Term = term2gene$CC$Term, Name = sapply(term2gene$CC$Term, function(x){Term(x)[[1]]}))
+
+IC = read.delim("../Atriophallophorus_winterbourni/EBI/GCA_013407085.1/GO_files/Atrio_GO_IC", header = F, sep = " ")
+
+#Add KO annotation
+kegg = read.delim("../Gene2Kegg_Awinterbourni.txt",header = F, sep = "\t")
+kegg = kegg[-1,c(1,2,3)]
+term2gene$Kegg = kegg[kegg$V2 != "",c(2,1)]
+colnames(term2gene$Kegg) = c("KO","Gene")
+term2gene$Kegg$Gene = str_remove(term2gene$Kegg$Gene, "-mRNA-1")
+term2name$Kegg = kegg[kegg$V2 != "",c(2,3)]
+colnames(term2name$Kegg) = c("KO", "Name")
+
+for_plots = NULL
+for (i in unique(Fst_grendalf$label)[c(2:5,7:10,11,15)]){
+  tb = Fst_grendalf[Fst_grendalf$label == i,]
+  x = list("Grendalf" = tb[tb$MeanGrendalfFst_4sd == "outlier",]$window, 
+           "C2" = tb[tb$C2std_Sig_SNPs > 0,]$window, 
+           "FetMean" = tb[tb$FET_SigMean_SNPs > 0,]$window, 
+           "FetMedian" = tb[tb$FET_SigMedian_SNPs > 0,]$window)
+  tb$color = if_else(tb$window %in% Reduce(intersect, x), "final_outlier", "not_outlier")
+  for_plots = rbind(for_plots, tb)
+}
+
+for_plots = for_plots %>% mutate(label2 = case_when(label %in% c("Alexandrina_Paringa", "Alexandrina_Mapourika", "Middleton_Paringa", "Mapourika_Middleton") ~ "West vs South Canterbury", 
+                                        label %in% c("Alexandrina_Selfe", "Middleton_Selfe") ~ "South Canterbury vs Selfe", 
+                                        label %in% c("Mapourika_Selfe", "Paringa_Selfe") ~ "West vs Selfe", 
+                                        label == "Alexandrina_Middleton" ~ "East vs East",  label == "Mapourika_Paringa" ~ "West vs West"))
+
+#Annotate Gos with GOSSlims
+library(GSEABase)
+library(tidyverse)
+library(rstatix)
+
+og_slimdf = NULL
+for (i in c("BP", "MF", "CC")){
+  myIds <- term2gene[[i]]$Term
+  myCollection <- GOCollection(myIds)
+  fl <- "../Atriophallophorus_winterbourni/EBI/GCA_013407085.1/GO_files/goslim.obo" #go_slim_generic
+  slim <- getOBOCollection(fl)
+  slimdf <- goSlim(myCollection, slim, ontology = i)
+  if (i == "BP"){
+    GO.db::GOBPOFFSPRING
+      mappedIds <-
+        function(df, collection, OFFSPRING)
+        {
+        map <- as.list(OFFSPRING[rownames(df)])
+        mapped <- lapply(map, intersect, ids(collection))
+        df[["go_terms"]] <- vapply(unname(mapped), paste, collapse = ";", character(1L))
+        df
+        }
+      slimdf <- mappedIds(slimdf, myCollection, GOBPOFFSPRING)
+  } else if (i == "MF"){
+     GO.db::GOMFOFFSPRING
+      mappedIds <-
+        function(df, collection, OFFSPRING)
+          {
+          map <- as.list(OFFSPRING[rownames(df)])
+          mapped <- lapply(map, intersect, ids(collection))
+          df[["go_terms"]] <- vapply(unname(mapped), paste, collapse = ";", character(1L))
+          df
+          }
+      slimdf <- mappedIds(slimdf, myCollection, GOMFOFFSPRING)
+  } else {
+    GO.db::GOCCOFFSPRING
+      mappedIds <-
+        function(df, collection, OFFSPRING)
+          {
+          map <- as.list(OFFSPRING[rownames(df)])
+          mapped <- lapply(map, intersect, ids(collection))
+          df[["go_terms"]] <- vapply(unname(mapped), paste, collapse = ";", character(1L))
+          df
+          }
+      slimdf <- mappedIds(slimdf, myCollection, GOCCOFFSPRING)
+  }
+  slimdf = slimdf %>% rownames_to_column("GOslim") %>% separate_longer_delim(go_terms, delim = ";")
+  slimdf = merge(merge(slimdf, term2gene[[i]], by.x = "go_terms", by.y = "Term"), term2name[[i]], by.x = "go_terms", by.y = "Term")
+  slimdf$GO = i
+  og_slimdf = rbind(og_slimdf,slimdf)
+}
+
+#OR:
+og_slimdf = read.delim("ogslimdf.txt")
+
+Cb64k <- c("#000000", "#FFFF00", "#1CE6FF", "#FF34FF", "#FF4A46", "#008941", "#006FA6", "#A30059",
+           "#FFDBE5", "#7A4900", "#0000A6", "#63FFAC", "#B79762", "#004D43", "#8FB0FF", "#997D87",
+           "#5A0007", "#809693", "#FEFFE6", "#1B4400", "#4FC601", "#3B5DFF", "#4A3B53", "#FF2F80",
+           "#61615A", "#BA0900", "#6B7900", "#00C2A0", "#FFAA92", "#FF90C9", "#B903AA", "#D16100",
+           "#DDEFFF", "#000035", "#7B4F4B", "#A1C299", "#300018", "#0AA6D8", "#013349", "#00846F",
+           "#372101", "#FFB500", "#C2FFED", "#A079BF", "#CC0744", "#C0B9B2", "#C2FF99", "#001E09",
+           "#00489C", "#6F0062", "#0CBD66", "#EEC3FF", "#456D75", "#B77B68", "#7A87A1", "#788D66",
+           "#885578", "#FAD09F", "#FF8A9A", "#D157A0", "#BEC459", "#456648", "#0086ED", "#886F4C",
+           "#34362D", "#B4A8BD", "#00A6AA", "#452C2C", "#636375", "#A3C8C9", "#FF913F", "#938A81",
+           "#575329", "#00FECF", "#B05B6F", "#8CD0FF", "#3B9700", "#04F757", "#C8A1A1", "#1E6E00",
+           "#7900D7", "#A77500", "#6367A9", "#A05837", "#6B002C", "#772600", "#D790FF", "#9B9700",
+           "#549E79", "#FFF69F", "#201625", "#72418F", "#BC23FF", "#99ADC0", "#3A2465", "#922329",
+           "#5B4534", "#FDE8DC", "#404E55", "#0089A3", "#CB7E98", "#A4E804", "#324E72", "#6A3A4C")
+```
+
+
+# {.tabset}
+
+## Selection of N-MT genes
+
+```{r, fig.height=10, fig.width=15}
+#https://www.mdpi.com/2218-273X/12/3/427#B164-biomolecules-12-00427
+
+kegg_mt = read.csv("../Mt_N_Confirmation/ko03029_annotated.csv")
+kegg_mtKOs = kegg_mt$KO_ID
+kegg_df =  merge(term2name$Kegg[term2name$Kegg$KO %in% kegg_mtKOs,],term2gene$Kegg[term2gene$Kegg$KO %in% term2name$Kegg[term2name$Kegg$KO %in% kegg_mtKOs,]$KO,], by = "KO")
+kegg_df = merge(kegg_df, kegg_mt, by.x = "KO", by.y = "KO_ID", all.x = TRUE)
+kegg_df = kegg_df[,c(4,1,5,6,3)]
+colnames(kegg_df) = c("Broad_ID", "Narrow_ID", "Broad_Term", "Narrow_Term", "Gene")
+kegg_df$Source = "KEGG"
+
+mtcandidates=NULL
+mtcandidates[["GO_mitochondrion_organization"]] = og_slimdf[og_slimdf$Term == "mitochondrion organization",] %>% unique()
+mtcandidates[["GO_mitochondrial_gene_expression"]] = og_slimdf[og_slimdf$Term == "mitochondrial gene expression",] %>% unique()
+mtcandidates[["GO_mitochondrial_membrane_building_blocks"]] = og_slimdf[og_slimdf$Term == "mitochondrion",] %>% unique()
+mtcandidates[["GO_mitochondrial_organelles_and_ER_interaction"]] = og_slimdf[og_slimdf$GOslim == "GO:0043226" & grepl("mitochon", og_slimdf$Name),] %>% unique()
+mtcandidates[["GO_DNA_replication"]] = og_slimdf[og_slimdf$Term == "DNA replication" & og_slimdf$Name == "mitochondrial DNA replication",] %>% unique()
+mtcandidates[["GO_programmed_cell_death"]] = og_slimdf[og_slimdf$Term == "programmed cell death" & og_slimdf$Name %in%  c("apoptotic mitochondrial changes", "mitochondrial outer membrane permeabilization"),] %>% unique()
+mtcandidates[["GO_generation_of_precursor_metabolites_and_energy"]] = og_slimdf[og_slimdf$Name %in% c("tricarboxylic acid cycle", "oxidative phosphorylation", "electron transport chain", "mitochondrial electron transport, ubiquinol to cytochrome c", "mitochondrial electron transport, cytochrome c to oxygen", "aerobic respiration", "ATP synthesis coupled electron transport", "mitochondrial ATP synthesis coupled electron transport", "cellular respiration"),] %>% unique()
+mtcandidates[["GO_lipid_metabolic_process"]] = og_slimdf[og_slimdf$Name == "fatty acid beta-oxidation",] %>% unique()
+mtcandidates[["GO_proton_motive_force-driven_ATP_synthesis"]] = og_slimdf[og_slimdf$Term == "carbohydrate derivative metabolic process" & og_slimdf$Name == "proton motive force-driven ATP synthesis",] %>% unique()
+mtcandidates[["GO_mitochondrial_respiratory_chain_complex_assembly"]] = og_slimdf[og_slimdf$Term == "protein-containing complex assembly" & og_slimdf$Name %in%  c("mitochondrial respiratory chain complex I assembly","mitochondrial respiratory chain complex assembly","mitochondrial respiratory chain complex III assembly"),] %>% unique()
+mtcandidates[["GO_NADH_dehydrogenase_activity"]] = og_slimdf[og_slimdf$Term == "oxidoreductase activity" & og_slimdf$Name %in%  c("NADH dehydrogenase activity","NADH dehydrogenase (ubiquinone) activity","NADH dehydrogenase (quinone) activity" ),] %>% unique()
+
+mtcandidates = lapply(mtcandidates, function(x){
+  x = x[,c(1,2,5,7,6,8)]
+  colnames(x) =  c("Narrow_ID", "Broad_ID", "Broad_Term", "Narrow_Term", "Gene", "Source")
+  return(x)})
+
+kegg_to_goslim = read.csv("../Mt_N_Confirmation/kegg_to_goslim_mapping.csv")
+
+for (i in unique(kegg_to_goslim$KEGG_Level_3)){
+  go_term = kegg_to_goslim[kegg_to_goslim$KEGG_Level_3 == i,]$GO_slim_match_1
+  subset = kegg_df[kegg_df$Narrow_Term %in% i,]
+  mtcandidates[[go_term]] = rbind(mtcandidates[[go_term]],subset)
+}
+
+mtcandidatesGenes = lapply(mtcandidates, function(x){unique(x$Gene)})
+print(length(unique(unlist(unname(mtcandidatesGenes)))))
+mtcandidatestoPlot = bind_rows(mtcandidates, .id = "Category")
+mtcandidatestoPlot = mtcandidatestoPlot %>% group_by(Category) %>% summarise(n_distinct(Gene))
+
+oxphos = unique(c(bind_rows(mtcandidates) %>% filter(grepl("ATP synthesis", Narrow_Term)) %>% pull(Gene) %>% unique(), bind_rows(mtcandidates) %>% filter(grepl("oxidative phosphorylation", Narrow_Term)) %>% pull(Gene) %>% unique(), bind_rows(mtcandidates) %>% filter(grepl("ATP synthase", Narrow_Term)) %>% pull(Gene) %>% unique(), bind_rows(mtcandidates) %>% filter(grepl("NADH dehydrogenase", Narrow_Term)) %>% pull(Gene) %>% unique(), bind_rows(mtcandidates) %>% filter(grepl("cytochrome c oxidase", Narrow_Term)) %>% pull(Gene) %>% unique(),bind_rows(mtcandidates) %>% filter(grepl("succinate", Narrow_Term)) %>% pull(Gene) %>% unique()))
+```
+
+Confirm how many genes are schistosoma orthologs
+
+```{r, fig.height=10, fig.width=15}
+# Select orthologs
+orth = read_delim("../Mt_N_Confirmation/atriophallophorus_winterbourni.PRJNA636673.WBPS19.orthologs.tsv")
+orth = orth[orth$gene_id %in% unique(unname(unlist(mtcandidatesGenes))) & grepl("Schistosoma mansoni", orth$ortholog_species_name),]
+
+# Load the ortholog annotations
+eggnog = read.delim("../Mt_N_Confirmation/mitochondrial_genes_schistosoma_orthologs.annotations_Eggnog.txt", header = TRUE, sep = "\t")
+oma = read.delim("../Mt_N_Confirmation/mitochondrial_genes_schistosoma_orthologs.annotations_OMA.txt", header = TRUE, sep = "\t")
+colnames(oma) = c("ortholog_gene_id","gene_id","ortholog_species_name", "GOs")
+pannzer2 = read.delim("../Mt_N_Confirmation/mitochondrial_genes_schistosoma_orthologs.annotations_Pannzer2.txt", header = TRUE, sep = "\t")
+colnames(pannzer2) = c("ortholog_gene_id","gene_id","ortholog_species_name", "GOs")
+all_schisto = rbind(pannzer2,oma,eggnog)
+
+all_schisto_slimdf = NULL
+for (i in c("BP", "MF", "CC")){
+  myIds <- all_schisto$GOs[!is.na(all_schisto$GOs)]
+  myIds = unique(myIds)
+  myCollection <- GOCollection(myIds)
+  fl <- "../Atriophallophorus_winterbourni/EBI/GCA_013407085.1/GO_files/goslim.obo" #go_slim_generic
+  slim <- getOBOCollection(fl)
+  slimdf <- goSlim(myCollection, slim, ontology = i)
+  if (i == "BP"){
+    GO.db::GOBPOFFSPRING
+      mappedIds <-
+        function(df, collection, OFFSPRING)
+        {
+        map <- as.list(OFFSPRING[rownames(df)])
+        mapped <- lapply(map, intersect, ids(collection))
+        df[["go_terms"]] <- vapply(unname(mapped), paste, collapse = ";", character(1L))
+        df
+        }
+      slimdf <- mappedIds(slimdf, myCollection, GOBPOFFSPRING)
+  } else if (i == "MF"){
+     GO.db::GOMFOFFSPRING
+      mappedIds <-
+        function(df, collection, OFFSPRING)
+          {
+          map <- as.list(OFFSPRING[rownames(df)])
+          mapped <- lapply(map, intersect, ids(collection))
+          df[["go_terms"]] <- vapply(unname(mapped), paste, collapse = ";", character(1L))
+          df
+          }
+      slimdf <- mappedIds(slimdf, myCollection, GOMFOFFSPRING)
+  } else {
+    GO.db::GOCCOFFSPRING
+      mappedIds <-
+        function(df, collection, OFFSPRING)
+          {
+          map <- as.list(OFFSPRING[rownames(df)])
+          mapped <- lapply(map, intersect, ids(collection))
+          df[["go_terms"]] <- vapply(unname(mapped), paste, collapse = ";", character(1L))
+          df
+          }
+      slimdf <- mappedIds(slimdf, myCollection, GOCCOFFSPRING)
+  }
+  slimdf = slimdf %>% rownames_to_column("GOslim") %>% separate_longer_delim(go_terms, delim = ";")
+  slimdf = merge(slimdf, all_schisto, by.x = "go_terms", by.y = "GOs")
+  slimdf$GOdb = i
+  all_schisto_slimdf = rbind(all_schisto_slimdf,slimdf)
+}
+
+length(unique(all_schisto$gene_id))/length(unique(bind_rows(mtcandidates)$Gene))
+
+all_schisto_slimdf1 = merge(bind_rows(mtcandidates)[,c(2,5)], all_schisto_slimdf[,c(2,6,7)], by.x = c("Broad_ID", "Gene"), by.y = c("GOslim", "gene_id"))
+length(unique(all_schisto_slimdf1$Gene))/length(unique(all_schisto$gene_id))
+
+all_schisto_slimdf2 = merge(bind_rows(mtcandidates)[,c(1,2,5)], all_schisto_slimdf[,c(1,2,6,7)], by.x = c("Narrow_ID", "Broad_ID","Gene"), by.y = c("go_terms","GOslim", "gene_id"))
+length(unique(all_schisto_slimdf2$Gene))/length(unique(all_schisto$gene_id))
+
+```
+
+## Figure 4D
+
+```{r, fig.height=10, fig.width=15}
+pdf("../Figures/GeneCount_MitochondrialCategories.pdf", height = 5, width = 13)
+mtsummary = bind_rows(mtcandidates, .id = "Category") %>% group_by(Category) %>% summarise("Gene Number" = n_distinct(Gene), "GO and KEGG IDs" = n_distinct(Narrow_ID)) %>% mutate(Category = str_remove(Category,"GO_")) %>% reshape2::melt(id.vars = "Category")
+function_levels = mtsummary[,c(1,3)] %>% unique() %>% arrange(Category) %>% dplyr::select(Category)  %>% unique()
+function_levels = function_levels$Category
+mtsummary$Category = factor(mtsummary$Category, levels = function_levels)
+funcols = setNames(c(brewPalette(n=10),"brown"),levels(mtsummary$Category))
+
+ggplot(mtsummary, aes(factor(Category, levels = function_levels), value, fill = Category)) + geom_bar(stat = "identity", position = "dodge") + theme_bw() +
+    theme(axis.text.x = element_blank(), axis.title.x = element_blank()) + scale_fill_manual(values = funcols) + facet_grid(~variable, scales = "free", space = "free") + guides(fill=guide_legend(ncol=1)) + labs(fill = "N-MT category", y = "Count") + theme(text = element_text(size = 15), legend.text = element_text(size = 11), strip.text = element_text(size = 18),axis.text.y = element_text(size = 18), axis.title.y = element_text(size = 18)) + 
+    geom_text(data = mtsummary, aes(x = factor(Category, levels = function_levels), y = Inf, label = value), inherit.aes = FALSE, vjust = 1.5) + scale_y_sqrt()
+
+dev.off()
+```
+
+
+```{r, fig.height=10, fig.width=15}
+
+xx = merge(for_plots[,c(1:5,10,11,12,13,14,18,19,20,21)], bind_rows(mtcandidates, .id = "Category")[,c(1,4,5,6,7)], by.x = "gene_name", by.y = "Gene", all.x = TRUE) %>% mutate(Category = if_else(is.na(Category) == TRUE, "Rest", Category))
+xx = xx %>% mutate(Function2 = if_else(Category == "Rest", "Rest", "Mitochondrial"))
+xx = xx %>% mutate(label2 = case_when(label %in% c("Alexandrina_Paringa", "Alexandrina_Mapourika", "Middleton_Paringa", "Mapourika_Middleton") ~ "West vs South Canterbury", label %in% c("Alexandrina_Selfe", "Middleton_Selfe") ~ "South Canterbury vs Selfe",  label %in% c("Mapourika_Selfe", "Paringa_Selfe") ~ "West vs Selfe",  label == "Alexandrina_Middleton" ~ "within South Canterbury",  label == "Mapourika_Paringa" ~ "within West"))
+xx$label2 = factor(xx$label2, levels = c("within West", "West vs Selfe", "West vs South Canterbury", "South Canterbury vs Selfe", "within South Canterbury"))
+
+distance = "../tLCP_1400.txt"
+distance = read.delim(distance, sep = " ")
+distance = distance[rownames(distance) %in% unique(metadata$lake),colnames(distance) %in% unique(metadata$lake)] %>% rownames_to_column() %>% reshape2::melt()
+distance = distance[!duplicated(distance),]
+distance$label = paste0(distance$rowname, "_", distance$variable)
+distance$distance = distance$value
+distance = distance[,c(5,4)]
+xx = merge(xx, distance, by = "label", all.x = TRUE)
+xxx = xx %>% arrange(chrom,start, end) 
+```
+
+## Figure 4B
+
+```{r, fig.height=5, fig.width=6}
+
+pdf("../Figures/ProportionOutliers_FST_Mitochondrial.pdf", width = 6, height = 9)
+p1 = xx %>% mutate(Function2 = if_else(Category == "Rest", "Non-Mitochondrial", "Mitochondrial")) %>% group_by(color, label, label2, gene_name, Function2) %>% summarise(nb_windows = n_distinct(window)) %>% pivot_wider(names_from = color, values_from = nb_windows) %>% replace(is.na(.), 0) %>% mutate(prop_final_out = final_outlier/(final_outlier+not_outlier)) %>% group_by(label2, Function2) %>% summarise(prop_final_out = mean(prop_final_out)) %>% ggplot(aes(prop_final_out,str_wrap(label2,10), color = Function2)) + geom_point(size = 3) + labs(x = "Average proportion of outliers", y = "", color = "category") + theme(plot.margin = unit(c(5,5,5,5),"mm"), axis.text.y = element_text(size = 13), legend.text = element_text(size = 15), legend.position = "top", axis.title.x = element_text(size = 13), axis.text.x = element_text(size = 13)) + scale_color_manual(values = c("black","darkgray"))
+
+p2 = xx %>% mutate(Function2 = if_else(Category == "Rest", "Non-Mitochondrial", "Mitochondrial")) %>% group_by(label2, Function2) %>% summarise(Fst = mean(Fst)) %>% ggplot(aes(Fst, str_wrap(label2,10),color = Function2)) + geom_point(size = 3) + labs(y = "", color = "category") + xlab(expression(F[ST])) + theme(plot.margin = unit(c(5,5,5,5),"mm"), axis.text.y = element_text(size = 13), legend.position = "", legend.text = element_text(size = 15),  axis.title.x = element_text(size = 13), axis.text.x = element_text(size = 13)) + scale_color_manual(values = c("black","darkgray"))
+p1/p2
+dev.off()
+```
+
+## Figure 4F
+
+```{r, fig.height=10, fig.width=15}
+mtclines = xx %>% mutate(Category = if_else(Category=="Rest", "Non-MT", Category)) %>% group_by(label2, Category) %>% summarise(Fst = mean(Fst), distance = mean(distance)) %>% filter(!label2 %in% c("West vs West", "East vs East"))
+mtclines$Category = str_remove(mtclines$Category, "GO_")
+mtclines$Category = factor(mtclines$Category, levels = c(unique(mtclines$Category)[!grepl("Non-MT", unique(mtclines$Category))], "Non-MT"))
+funcols = c(funcols,setNames("darkgrey","Non-MT"))
+
+
+line_labels <- mtclines %>% data.frame() %>%
+    select(distance, label2) %>%
+    distinct()
+
+line_segments <- mtclines %>%
+    arrange(Category, distance) %>%
+    group_by(Category) %>%  
+    mutate(
+        next_distance = lead(distance),
+        next_Fst = lead(Fst)
+    ) %>%
+    filter(!is.na(next_distance), (next_distance - distance) <= 50) %>%
+    ungroup()
+
+pdf("../Figures/mtcategories_clinesv3.pdf", width = 8, height = 7)
+p1 = ggplot(mtclines, aes(x = Fst, y = distance)) +
+    # Draw only short lines between points
+    geom_segment(data = line_segments,
+                 aes(x = Fst, xend = next_Fst,
+                     y = distance, yend = next_distance,
+                     color = Category),
+                 linewidth = 0.8,
+                 inherit.aes = FALSE) +
+    geom_point(aes(color = Category), size = 2) +
+    geom_hline(yintercept = unique(mtclines$distance), 
+               linetype = "dashed", color = "black", alpha = 0.5) +
+    geom_text(data = line_labels,
+              aes(x = 0, y = distance, label = label2),
+              vjust = 1.5, hjust = 0, size = 4.5, inherit.aes = FALSE) +
+    theme_bw() +
+    theme(
+        strip.text = element_text(face = "bold"),
+        legend.position = "right",
+        axis.title.y = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        axis.title.x = element_text(size = 15),
+        axis.text.x = element_text(size = 15)
+    ) +
+    labs(
+        y = "Geographic Distance (km)",
+        x = expression(F[ST])
+    ) + scale_color_manual(
+  values = funcols,
+  labels = function(x) stringr::str_wrap(x, width = 25)
+) + guides(color=guide_legend(ncol=1))
+p1
+dev.off()
+```
+
+## Supplementary Figure S3
+
+```{r, fig.height=10, fig.width=15}
+mtclines = xx %>% mutate(Narrow_Term = if_else(is.na(Narrow_Term), "Non-MT", Narrow_Term)) %>% group_by(label2, Narrow_Term) %>% summarise(Fst = mean(Fst), distance = mean(distance)) %>% filter(!label2 %in% c("West vs West", "East vs East"))
+mtclines$Narrow_Term = factor(mtclines$Narrow_Term, levels = c(unique(mtclines$Narrow_Term)[!grepl("Non-MT", unique(mtclines$Narrow_Term))], "Non-MT"))
+
+West_vs_Selfe_terms = mtclines[,c(1,2,3)] %>% pivot_wider(names_from = label2, values_from = Fst) %>% filter(`West vs Selfe`*1.1 < `South Canterbury vs Selfe`) %>% filter(Narrow_Term != "kinetoplast") %>% dplyr::select(Narrow_Term) %>% as.list()
+mtclines = mtclines %>% data.frame() %>% mutate(color = if_else(Narrow_Term %in% West_vs_Selfe_terms$Narrow_Term, Narrow_Term, ""))
+mtclines = mtclines[mtclines$color != "",]
+mtclines$color = factor(mtclines$color, levels =c(unique(mtclines$color)[-1],unique(mtclines$color)[1]))
+
+
+line_labels <- mtclines %>% data.frame() %>%
+    select(distance, label2) %>%
+    distinct()
+
+line_segments <- mtclines %>%
+    arrange(Narrow_Term, distance) %>%
+    group_by(Narrow_Term) %>%  
+    mutate(
+        next_distance = lead(distance),
+        next_Fst = lead(Fst)
+    ) %>%
+    filter(!is.na(next_distance), (next_distance - distance) <= 50) %>%
+    ungroup()
+pdf("../Figures/mtcategories_clines.narrow.pdf", width = 9, height = 7)
+px = data.frame("cat" = c("N-MT genes", "N-MT in selected GO terms"), "nb" = c(length(unique(xx[!is.na(xx$Narrow_Term),]$gene_name)), length(unique(xx[xx$Narrow_Term %in% West_vs_Selfe_terms$Narrow_Term,]$gene_name)))) %>% ggplot(aes(x="", y = nb, fill = cat)) + geom_col() + theme_bw() + theme(legend.position = "", axis.title.y = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        axis.title.x = element_text(size = 15),
+        axis.text.x = element_text(size = 15)) + labs(x="", y = "Number of genes") + scale_fill_manual(values = c("grey", "red"))
+p2 = ggplot(mtclines[mtclines$color != "",], aes(x = Fst, y = distance)) +
+    # Draw only short lines between points
+    geom_segment(data = line_segments,
+                 aes(x = Fst, xend = next_Fst,
+                     y = distance, yend = next_distance,
+                     color = color),
+                 linewidth = 0.8,
+                 inherit.aes = FALSE) +
+    geom_point(aes(color = color), size = 2) +
+    geom_hline(yintercept = unique(mtclines$distance), 
+               linetype = "dashed", color = "black", alpha = 0.5) +
+    geom_text(data = line_labels,
+              aes(x = 0.065, y = distance, label = label2),
+              vjust = 1.5, hjust = 0, size = 4, inherit.aes = FALSE) +
+    theme_bw() +
+    theme(
+        strip.text = element_text(face = "bold"),
+        legend.position = "right", legend.text = element_text(size = 11),
+        axis.title.y = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        axis.title.x = element_text(size = 15),
+        axis.text.x = element_text(size = 15)
+    ) +
+    labs(
+        y = "Geographic Distance (km)",
+        x = expression(F[ST]), colour = "GO and KEGG terms"
+    ) + scale_fill_manual(
+        values = Cb64k,
+        labels = function(x) str_wrap(x, width = 50)
+    ) + scale_color_manual(
+        values = Cb64k,
+        labels = function(x) str_wrap(x, width = 50)
+    ) + guides(fill=guide_legend(ncol=1), color=guide_legend(ncol=1))
+px + p2 + plot_layout(widths = c(0.1,0.9)) + ggtitle("West less divergent from Selfe")
+dev.off()
+```
+
+## Figure 4E
+
+Manhattan plot of the mitochondrial functions for East vs Selfe
+
+```{r, fig.height=5, fig.width=15}
+xxx = xxx %>% mutate(Function2_color = case_when(Function2 == "Mitochondrial" & color == "not_outlier"~ "Mitochondrial not_outlier", Function2 == "Mitochondrial" & color == "final_outlier" ~ Category, .default = "rest")) 
+xxx$Function2_color = str_remove(xxx$Function2_color, "GO_")
+xxx$Function2_color = factor(xxx$Function2_color, levels = c("Mitochondrial not_outlier", unique(xxx$Function2_color)[c(-1,-2)], "rest"))
+xxx$label = factor(xxx$label, levels = c("Alexandrina_Mapourika", "Alexandrina_Paringa", "Mapourika_Middleton", "Middleton_Paringa", "Alexandrina_Selfe", "Middleton_Selfe", "Paringa_Selfe", "Mapourika_Selfe", "Alexandrina_Middleton","Mapourika_Paringa"))
+xxx = xxx[xxx$label %in% c("Alexandrina_Selfe", "Middleton_Selfe", "Paringa_Selfe", "Mapourika_Selfe"),]
+
+Cb64k <- c(funcols[c(-12)], setNames(c("grey", "black"), c("rest", "Mitochondrial not_outlier")))
+
+
+pdf("../Figures/Manhattan_Mitochondrial.pdf",height = 8, width = 10)
+ggplot(xxx,aes(window,Fst)) + geom_point(data = xxx[xxx$Function2_color == "rest",], aes(window,Fst), color = "grey") + geom_point(data = xxx[xxx$Function2_color == "Mitochondrial not_outlier",], aes(window,Fst), color = "black") + geom_point(data = xxx[!(xxx$Function2_color %in% c("Mitochondrial not_outlier", "rest")),], aes(window,Fst, color = Function2_color), size = 3) + theme(axis.text.x = element_blank(), axis.ticks.x = element_blank()) + facet_wrap(~label, ncol = 1) + scale_color_manual(values = funcols) + labs(color = "N-MT category", y = F[ST] ~ "value", x = "genomic window") + theme(axis.title.y = element_text(size = 15), strip.text = element_text(size = 15), axis.title.x =  element_text(size = 15), axis.text.y = element_text(size = 15))
+dev.off()
+```
+
+## Figure 4C
+
+Venn - how many overlap with bottom up analysis
+
+```{r, fig.height=10, fig.width=15}
+
+list_of_outliers = NULL
+for (i in unique(for_plots$label)){
+  tb = for_plots[for_plots$label == i & for_plots$color == "final_outlier",]
+  tb = tb$window
+  list_of_outliers[[i]] = tb
+}
+
+West_East_outliers = setdiff(setdiff(intersect(intersect(intersect(list_of_outliers$Alexandrina_Paringa, list_of_outliers$Alexandrina_Mapourika), list_of_outliers$Mapourika_Middleton), list_of_outliers$Middleton_Paringa), list_of_outliers$Alexandrina_Middleton), list_of_outliers$Mapourika_Paringa)
+
+Incoming_to_Selfe_East= setdiff(setdiff(intersect(intersect(West_East_outliers, list_of_outliers$Mapourika_Selfe), list_of_outliers$Paringa_Selfe), list_of_outliers$Alexandrina_Selfe), list_of_outliers$Middleton_Selfe)
+Incoming_to_Selfe_East=Incoming_to_Selfe_East[!duplicated(Incoming_to_Selfe_East)]
+  
+Incoming_to_Selfe_West= setdiff(setdiff(intersect(intersect(West_East_outliers, list_of_outliers$Middleton_Selfe), list_of_outliers$Alexandrina_Selfe), list_of_outliers$Mapourika_Selfe),list_of_outliers$Paringa_Selfe)
+Incoming_to_Selfe_West=Incoming_to_Selfe_West[!duplicated(Incoming_to_Selfe_West)]
+
+BDMI = setdiff(setdiff(setdiff(setdiff(West_East_outliers, list_of_outliers$Alexandrina_Selfe), list_of_outliers$Mapourika_Selfe), list_of_outliers$Paringa_Selfe), list_of_outliers$Middleton_Selfe)
+
+obj = for_plots %>% 
+  mutate(category = case_when(window %in% Incoming_to_Selfe_East ~ "Introgressing from South Canterbury", 
+                           window %in% Incoming_to_Selfe_West ~ "Introgressing from West",
+                           window %in% BDMI ~ "Introgressing from both",
+                           .default = "Rest")) 
+Incoming_to_Selfe_East_genes = setdiff(unique(obj[obj$category == "Introgressing from South Canterbury",]$gene_name), "")
+Incoming_to_Selfe_West_genes = setdiff(unique(obj[obj$category == "Introgressing from West",]$gene_name), "")
+BDMI_genes = setdiff(unique(obj[obj$category == "Introgressing from both",]$gene_name), "")
+
+Mitochondrial=unique(unique(xx[xx$Category != "Rest",]$gene_name))
+
+pdf("../Figures/GGvenn_mito_WestvsEast_overlap.pdf", height = 6, width = 9)
+ggVennDiagram(list("Introgressing from both" = BDMI_genes, "Introgressing from South Canterbury"= Incoming_to_Selfe_East_genes, "Introgressing from West" = Incoming_to_Selfe_West_genes, "Mitochondrial" = Mitochondrial), set_color = c("orange", "plum", "darkcyan", "black"), label_color = "white", label_size = 5) + scale_fill_gradient2(midpoint = 150, low = "skyblue4", high = "pink4")  + scale_x_continuous(expand = expansion(mult = .4))
+dev.off()
+```
+
+```{r, fig.height=10, fig.width=15}
+
+pdf("../Figures/GGvenn_mito_overlap.pdf", height = 3, width = 5)
+cats =list("South Canterbury vs Selfe" = unique(xx[(xx$label2 == "South Canterbury vs Selfe") & (xx$color == "final_outlier") & (xx$Function2 == "Mitochondrial"),]$window), "West vs Selfe" = unique(xx[(xx$label2 == "West vs Selfe") & (xx$color == "final_outlier") & (xx$Function2 == "Mitochondrial"),]$window), "West vs South Canterbury" = unique(xx[(xx$label2 == "West vs South Canterbury") & (xx$color == "final_outlier") & (xx$Function2 == "Mitochondrial"),]$window))
+ggVennDiagram(cats, label_color = "white") + scale_x_continuous(expand = expansion(mult = .4)) + ggtitle("Diverget genomic windows within N-MT genes") 
+dev.off()
+```
+
+
+### Synonymous vs non-synonymous rates N-MT genes - Last results section
+
+
+```{r, fig.height=10, fig.width=15}
+pooldata = popsync2pooldata(
+  sync.file = "../combined.filtered.nomasked.sync",
+  poolsizes = c(rep(24,16)),
+  poolnames = poolnames,
+  nthreads = 1, min.maf = 0.0001
+)
+pooldata = pooldata.subset(pooldata, pool.index = c(1:12,14:16))
+df = cbind(pooldata@snp.info, pooldata@readcoverage - pooldata@refallele.readcount)
+df = df[df$`15` =! 0 & df$`14` =! 0 & df$`13` =! 0,]
+df = makeGRangesFromDataFrame(df, seqnames.field = "Chromosome", start.field = "Position", end.field = "Position", keep.extra.columns = T)
+gtf = readGFF("../Atriophallophorus_winterbourni/EBI/GCA_013407085.1/Annotation/Genes/genes.gtf")
+gtf = gtf[gtf$gene_id %in% unique(xx[xx$Category == "GO_mitochondrial_gene_expression",]$gene_name) & gtf$type == "CDS",]
+genes = makeGRangesFromDataFrame(gtf[gtf$gene_id %in% unique(xx[xx$Narrow_Term %in% West_vs_Selfe_terms$Narrow_Term,]$gene_name) & gtf$type == "CDS",c(1,4,5,9)], keep.extra.columns = T)
+overlaps <- findOverlaps(df, genes)
+snp_indices <- queryHits(overlaps)
+gene_indices <- subjectHits(overlaps)
+unique_snp_indices <- unique(snp_indices)
+write_delim(data.frame(df[unique_snp_indices,]) %>% dplyr::select(1,2,7,6), "../../../snpEff/n-mt.genes.bed", delim = "\t")
+
+#in snpeff folder 
+#python scripts/variants_to_vcf.py n-mt.genes.bed n-mt.genes.vcf
+#java -Xmx4g -jar snpEff.jar ann -v ASM1340708v1 n-mt.genes.vcf > annotated.vcf
+
+nonsynonymous <- c(
+  "variants_effect_missense_variant",        # Changes amino acid
+  "variants_effect_stop_gained",             # Nonsense mutation
+  "variants_effect_stop_lost",               # Removes stop codon
+  "variants_effect_start_lost",              # Removes start codon
+  "variants_effect_initiator_codon_variant"  # Changes start codon
+)
+
+synonymous <- c(
+  "variants_effect_synonymous_variant",
+  "variants_effect_stop_retained_variant",
+  "variants_effect_start_retained_variant"
+)
+
+dnds_genes = read.delim("../../../snpEff/n-mt.snpEff_genes.txt", skip = 1)
+dnds_genes = dnds_genes[dnds_genes$GeneId %in% unique(xx[xx$Narrow_Term %in% West_vs_Selfe_terms$Narrow_Term,]$gene_name),]
+dnds_genes$noimpact = dnds_genes$variants_impact_LOW
+dnds_genes$impact = rowSums(dnds_genes[,c(5,7)])
+dnds_genes[,c(1,16,17)] %>% reshape2::melt(id.vars = "X.GeneName") %>% ggplot(aes(variable, value)) + geom_boxplot()
+
+all_genes = read.delim("../../../snpEff/all.selfe_alt.snpEff_genes.txt", skip = 1)
+all_genes$DS = rowSums(dnds_genes[,c(5,7)])
+all_genes$DN = rowSums(all_genes[,c(13,15,16:19,21,22)])
+all_genes$DnDs = rowSums(all_genes[,c(5,7)])/all_genes$variants_impact_LOW
+
+#Checking for variants in NADH dehydrogenase genes, cytochrome c oxidase and ubiquinol to cytochrome c -> those genes with variants between divergent mitotypes in mitochondrial genomes
+#exchange "NADH dehydrogenase" with "cytochrome c oxidase" or "ubiquinol"
+gtf = readGFF("../Atriophallophorus_winterbourni/EBI/GCA_013407085.1/Annotation/Genes/genes.gtf")
+gtf = gtf[gtf$gene_name %in% c(bind_rows(mtcandidates) %>% filter(grepl("NADH dehydrogenase", Narrow_Term)) %>% pull(Gene) %>% unique()) & gtf$type == "CDS",] #subset to 41 NADH dehydrogenase genes
+genes = makeGRangesFromDataFrame(gtf[,c(1,4,5,9)], keep.extra.columns = T)
+
+#Mutations between South Canterbury vs (West and Selfe)
+df = cbind(pooldata@snp.info, pooldata@readcoverage - pooldata@refallele.readcount)
+df = df[df$`1` > 6 & df$`2` > 6 & df$`3` > 6 & df$`7` > 6 & df$`8` > 6 & df$`9` > 6 & df$`15` < 6 & df$`14` < 6 & df$`13`< 6 & df$`4` < 6 & df$`5` < 6 & df$`6` < 6 & df$`10` < 6 & df$`11` < 6 & df$`12` < 6,]
+df = makeGRangesFromDataFrame(df, seqnames.field = "Chromosome", start.field = "Position", end.field = "Position", keep.extra.columns = T)
+overlaps <- findOverlaps(df, genes)
+snp_indices <- queryHits(overlaps)
+gene_indices <- subjectHits(overlaps)
+unique_snp_indices <- unique(snp_indices)
+
+#Mutations between (West and Selfe) vs South Canterbury
+df = cbind(pooldata@snp.info, pooldata@readcoverage - pooldata@refallele.readcount)
+df = df[df$`1` < 6 & df$`2` < 6 & df$`3` < 6 & df$`7` < 6 & df$`8` < 6 & df$`9` < 6 & df$`15` > 6 & df$`14` > 6 & df$`13`> 6 & df$`4` > 6 & df$`5` > 6 & df$`6` > 6 & df$`10` > 6 & df$`11` > 6 & df$`12` > 6,]
+df = makeGRangesFromDataFrame(df, seqnames.field = "Chromosome", start.field = "Position", end.field = "Position", keep.extra.columns = T)
+overlaps <- findOverlaps(df, genes)
+snp_indices <- queryHits(overlaps)
+gene_indices <- subjectHits(overlaps)
+unique_snp_indices <- unique(snp_indices)
+
+#Mutations between West vs (South Canterbury and Selfe)
+df = cbind(pooldata@snp.info, pooldata@readcoverage - pooldata@refallele.readcount)
+df = df[df$`1` < 6 & df$`2` < 6 & df$`3` < 6 & df$`7` < 6 & df$`8` < 6 & df$`9` < 6 & df$`15` < 6 & df$`14` < 6 & df$`13`< 6 & df$`4` > 6 & df$`5` > 6 & df$`6` > 6 & df$`10` > 6 & df$`11` > 6 & df$`12` > 6,]
+df = makeGRangesFromDataFrame(df, seqnames.field = "Chromosome", start.field = "Position", end.field = "Position", keep.extra.columns = T)
+overlaps <- findOverlaps(df, genes)
+snp_indices <- queryHits(overlaps)
+gene_indices <- subjectHits(overlaps)
+unique_snp_indices <- unique(snp_indices)
+
+#Mutations between (South Canterbury and Selfe) vs West
+df = cbind(pooldata@snp.info, pooldata@readcoverage - pooldata@refallele.readcount)
+df = df[df$`1` > 6 & df$`2` > 6 & df$`3` > 6 & df$`7` > 6 & df$`8` > 6 & df$`9` > 6 & df$`15` > 6 & df$`14` > 6 & df$`13`> 6 & df$`4` < 6 & df$`5` < 6 & df$`6` < 6 & df$`10` < 6 & df$`11` < 6 & df$`12` < 6,]
+df = makeGRangesFromDataFrame(df, seqnames.field = "Chromosome", start.field = "Position", end.field = "Position", keep.extra.columns = T)
+overlaps <- findOverlaps(df, genes)
+snp_indices <- queryHits(overlaps)
+gene_indices <- subjectHits(overlaps)
+unique_snp_indices <- unique(snp_indices)
+
+```
+
+what if you subsample widows at random - how many will map to mitochondrial genes - MC permutation
+
+```{r orths, fig.height=6, fig.width=6}
+
+# Parameters
+N <- length(unique(for_plots$gene_name))                # Total number of genes
+x <- length(bind_rows(mtcandidates)$Gene)                 # Number of mitochondrial genes
+n <- length(list_of_genes_of_interest$`Introgressing from East`)                 # Number of outliers
+y <-  length(intersect(mtcandidatesT, list_of_genes_of_interest$`Introgressing from East`))                 # Observed number of mitochondrial outliers
+
+# Monte Carlo simulation
+set.seed(42)  # For reproducibility
+num_simulations <- 10000
+results <- replicate(num_simulations, {
+  sampled_genes <- sample(unique(for_plots$gene_name), n)  # Randomly sample outlier genes
+  sum(sampled_genes %in% bind_rows(mtcandidates)$Gene)  # Count mitochondrial genes in the sample
+})
+
+
+p_value <- mean(results >= y)
+
+cat("Observed mitochondrial outliers:", y, "\n")
+cat("P-value (MC permutation test):", p_value, "\n")
+```

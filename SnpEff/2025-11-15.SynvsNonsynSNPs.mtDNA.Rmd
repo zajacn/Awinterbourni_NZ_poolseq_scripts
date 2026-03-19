@@ -41,16 +41,19 @@ pooldatamt = popsync2pooldata(
     nlines.per.readblock = 1e+06,
     nthreads = 1, min.maf = 0.0001
 )
-mito = data.frame(pooldatamt@refallele.readcount)
+
+mito = (data.frame(pooldatamt@refallele.readcount)* 100)/data.frame(pooldatamt@readcoverage)
 colnames(mito) = pooldatamt@poolnames
 mito = cbind(data.frame(pooldatamt@snp.info), mito)
+to_filter = rownames(mito[rowSums(mito[, 5:19] >= 95) == 15 | rowSums(mito[, 5:19] <= 5) == 15, ])
+mito = mito[!rownames(mito) %in% to_filter,]
 
-Mhap_SNPs = mito[mito$Paringa_Pool1 == 0 & mito$Paringa_Pool2 == 0 & mito$Paringa_Pool3 == 0 & mito$Mapourika_Jetty_Pool1 == 0 & mito$Mapourika_Mix_Pool2 == 0 & mito$Mapourika_Otto_Pool3 == 0 & mito$Selfe_Pool1 == 0 & mito$Selfe_Pool2 == 0 & mito$Selfe_Pool3 == 0 & mito$Alex_CAMP2ndWP != 0 & mito$Alex_MW != 0 & mito$Alex_NE != 0 & mito$Middleton_Pool1 != 0 & mito$Middleton_Pool2 != 0 & mito$Middleton_Pool3 != 0,c(1,2,3,4)]
-write_delim(Mhap_SNPs, "/Users/nataliazajac/snpEff/Mhap/mt.Mhap.bed")
+# Select SNPs divergent between M and W/CA hapltoypes and save them for functional annotation in snpeff
+Mhap_SNPs = mito[rowSums(mito[,c(5:7, 11:13)] < 5) == 6 & rowSums(mito[,c(8:10, 14:19)] >= 95) == 9, c(1,2,3,4)]
+write_delim(Mhap_SNPs, "/Users/nataliazajac/snpEff/Mhap/mt.Mhap.bed", delim = "\t")
 
-
-Whap_CAhap_SNPs = mito[mito$Paringa_Pool1 != 0 & mito$Paringa_Pool2 != 0 & mito$Paringa_Pool3 != 0 & mito$Mapourika_Jetty_Pool1 != 0 & mito$Mapourika_Mix_Pool2 != 0 & mito$Mapourika_Otto_Pool3 != 0 & mito$Selfe_Pool1 != 0 & mito$Selfe_Pool2 != 0 & mito$Selfe_Pool3 != 0 & mito$Alex_CAMP2ndWP == 0 & mito$Alex_MW == 0 & mito$Alex_NE == 0 & mito$Middleton_Pool1 == 0 & mito$Middleton_Pool2 == 0 & mito$Middleton_Pool3 == 0,c(1,2,3,4)]
-write_delim(Whap_CAhap_SNPs, "/Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhap.bed")
+Whap_CAhap_SNPs = mito[rowSums(mito[,c(5:7, 11:13)] >= 95) == 6 & rowSums(mito[,c(8:10, 14:19)] < 5) == 9, c(1,2,3,4)]
+write_delim(Whap_CAhap_SNPs, "/Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhap.bed", delim = "\t")
 
 #in snpeff folder 
 #python scripts/variants_to_vcf.py /Users/nataliazajac/snpEff/Mhap/mt.Mhap.bed /Users/nataliazajac/snpEff/Mhap/mt.Mhap.vcf
@@ -58,15 +61,31 @@ write_delim(Whap_CAhap_SNPs, "/Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhap.bed
 #python scripts/variants_to_vcf.py /Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhap.bed /Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhap.vcf
 #java -Xmx4g -jar snpEff.jar ann -v ASM1340708v1 /Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhap.vcf > /Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhapannot.vcf
 
-Mhap = read.delim("/Users/nataliazajac/snpEff/Mhap/snpEff_genes.txt", skip = 1)
-WCAhap = read.delim("/Users/nataliazajac/snpEff/WCAhap/snpEff_genes.txt", skip = 1)
-all = rbind(Mhap[,c(1,7:9)]  %>% reshape2::melt(id.vars = c("X.GeneName")) %>% mutate(hap = "M haplotype"),
-WCAhap[,c(1,8:11)] %>% reshape2::melt(id.vars = c("X.GeneName")) %>% mutate(hap = "W and CA haplotype"))
-all$variable = gsub("_", " ", str_remove(all$variable, "variants_effect_"))
-all$X.GeneName = toupper(all$X.GeneName)
-
-pdf("../Figures/MitoGenesVariants.pdf", height = 4, width = 8)
-all %>% group_by(X.GeneName, variable) %>% summarise(value = sum(value)) %>% ggplot(aes(value,X.GeneName , fill = variable)) + geom_col(position = "dodge") + labs(y = "Gene Name", x="Number of SNPs",fill = "Annotation") + ggtitle("MT variants between M and W/CA haplotypes") + theme(axis.title.x = element_text(size = 15), axis.text.x = element_text(size = 15), axis.title.y = element_text(size = 15), axis.text.y = element_text(size = 15), legend.text = element_text(size = 15), legend.title = element_text(size = 15)) + scale_x_sqrt() + scale_fill_manual(values = c("orange4", "chartreuse", "dodgerblue", "deeppink4"))
+Mhap = read.vcfR("/Users/nataliazajac/snpEff/Mhap/mt.Mhapannot.vcf")
+Mhap = data.frame(effect = sapply(str_split(data.frame(Mhap@fix)$INFO, "\\|"), .subset, 2), gene = sapply(str_split(data.frame(Mhap@fix)$INFO, "\\|"), .subset, 4))
+WCAhap = read.vcfR("/Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhapannot.vcf")
+WCAhap = data.frame(effect = sapply(str_split(data.frame(WCAhap@fix)$INFO, "\\|"), .subset, 2), gene = sapply(str_split(data.frame(WCAhap@fix)$INFO, "\\|"), .subset, 4))
+pdf("../Figures/MitoGenesVariants.pdf", height = 6, width = 8)
+rbind(Mhap, WCAhap) %>% group_by(gene, effect) %>% summarise(count = n()) %>% mutate(effect = str_replace(str_replace(effect, "_", " "), "_", " "))  %>% mutate(effect = str_replace(str_replace(effect, "&", " & "), "_", " ")) %>% 
+    ggplot(aes(count, toupper(gene), fill = effect)) +
+    geom_col(position = position_dodge2(width = 0.9, preserve = "single")) +
+    labs(y = "Gene Name", x="Number of SNPs", fill = "Annotation") +
+    ggtitle("MT variants between M and W/CA haplotypes") +
+    theme(title = element_text(size = 15),
+        axis.title.x = element_text(size = 15),
+        axis.text.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        axis.text.y = element_text(size = 15),
+        legend.text = element_text(size = 15),
+        legend.title = element_text(size = 15),
+        legend.position = c(0.8, 0.5),
+        legend.background = element_rect(fill = "white", colour = "black")
+    ) +
+    scale_x_sqrt() +
+    scale_fill_manual(
+        values = c("salmon", "chartreuse","dodgerblue4","dodgerblue","deeppink4"),
+        labels = function(x) stringr::str_wrap(x, width = 30)
+    )
 dev.off()
 
 ```

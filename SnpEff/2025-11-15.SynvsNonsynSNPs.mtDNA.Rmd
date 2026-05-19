@@ -28,20 +28,25 @@ library(textshaping)
 library(ggpubr)
 library(ggrepel)
 
-source("../BayPass/baypass_utils.R")
+working_dir=getwd()
+source(paste0(working_dir,"/../BayPass/baypass_utils.R"))
 
-df = read_delim("../test.sync") # just for colnames
+df = read_delim(paste0(working_dir,"/../test.sync")) # just for colnames
 poolnames = str_remove(sapply(str_split(colnames(df)[c(-1:-3)], "\\."), .subset, 2), "B-")
 
 pooldatamt = popsync2pooldata(
-    sync.file = "../all_samples.mit.sync.filtered.sync",
+    sync.file = paste0(working_dir,"/../all_samples.mit.sync.filtered.sync"),
     poolsizes = c(rep(24,15)),
     poolnames = poolnames[-13],
     noindel = TRUE,
     nlines.per.readblock = 1e+06,
     nthreads = 1, min.maf = 0.0001
 )
-
+mtcov= data.frame(pooldatamt@readcoverage)
+mtcov = cbind(data.frame(pooldatamt@snp.info), mtcov)
+tokeep = mtcov %>%
+    filter(if_all(5:19, ~ . < 6000))
+pooldatamt = poolfstat::pooldata.subset(pooldatamt, snp.index = as.numeric(rownames(tokeep)))
 mito = (data.frame(pooldatamt@refallele.readcount)* 100)/data.frame(pooldatamt@readcoverage)
 colnames(mito) = pooldatamt@poolnames
 mito = cbind(data.frame(pooldatamt@snp.info), mito)
@@ -56,16 +61,22 @@ Whap_CAhap_SNPs = mito[rowSums(mito[,c(5:7, 11:13)] >= 95) == 6 & rowSums(mito[,
 write_delim(Whap_CAhap_SNPs, "/Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhap.bed", delim = "\t")
 
 #in snpeff folder 
-#python scripts/variants_to_vcf.py /Users/nataliazajac/snpEff/Mhap/mt.Mhap.bed /Users/nataliazajac/snpEff/Mhap/mt.Mhap.vcf
-#java -Xmx4g -jar snpEff.jar ann -v ASM1340708v1 /Users/nataliazajac/snpEff/Mhap/mt.Mhap.vcf > /Users/nataliazajac/snpEff/Mhap/mt.Mhapannot.vcf
-#python scripts/variants_to_vcf.py /Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhap.bed /Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhap.vcf
-#java -Xmx4g -jar snpEff.jar ann -v ASM1340708v1 /Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhap.vcf > /Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhapannot.vcf
+#python $working_dir/SnpEff/variants_to_vcf.py /Users/nataliazajac/snpEff/Mhap/mt.Mhap.bed /Users/nataliazajac/snpEff/Mhap/mt.Mhap.vcf
+#java -Xmx4g -jar snpEff.jar ann -v ASM1340708v1_Mito /Users/nataliazajac/snpEff/Mhap/mt.Mhap.vcf > /Users/nataliazajac/snpEff/Mhap/mt.Mhapannot.vcf
+#python $working_dir/SnpEff/variants_to_vcf.py /Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhap.bed /Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhap.vcf
+#java -Xmx4g -jar snpEff.jar ann -v ASM1340708v1_Mito /Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhap.vcf > /Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhapannot.vcf
 
 Mhap = read.vcfR("/Users/nataliazajac/snpEff/Mhap/mt.Mhapannot.vcf")
 Mhap = data.frame(effect = sapply(str_split(data.frame(Mhap@fix)$INFO, "\\|"), .subset, 2), gene = sapply(str_split(data.frame(Mhap@fix)$INFO, "\\|"), .subset, 4))
 WCAhap = read.vcfR("/Users/nataliazajac/snpEff/WCAhap/mt.WhapCAhapannot.vcf")
 WCAhap = data.frame(effect = sapply(str_split(data.frame(WCAhap@fix)$INFO, "\\|"), .subset, 2), gene = sapply(str_split(data.frame(WCAhap@fix)$INFO, "\\|"), .subset, 4))
-pdf("../Figures/MitoGenesVariants.pdf", height = 6, width = 8)
+
+```
+
+## Figure 4G
+
+```{r setup, include=FALSE}
+pdf(paste0(working_dir,"/../Figures/MitoGenesVariants.pdf"), height = 5, width = 9)
 rbind(Mhap, WCAhap) %>% group_by(gene, effect) %>% summarise(count = n()) %>% mutate(effect = str_replace(str_replace(effect, "_", " "), "_", " "))  %>% mutate(effect = str_replace(str_replace(effect, "&", " & "), "_", " ")) %>% 
     ggplot(aes(count, toupper(gene), fill = effect)) +
     geom_col(position = position_dodge2(width = 0.9, preserve = "single")) +
@@ -83,9 +94,8 @@ rbind(Mhap, WCAhap) %>% group_by(gene, effect) %>% summarise(count = n()) %>% mu
     ) +
     scale_x_sqrt() +
     scale_fill_manual(
-        values = c("salmon", "chartreuse","dodgerblue4","dodgerblue","deeppink4"),
+        values = c("chartreuse","dodgerblue4","dodgerblue","deeppink4"),
         labels = function(x) stringr::str_wrap(x, width = 30)
     )
 dev.off()
-
 ```

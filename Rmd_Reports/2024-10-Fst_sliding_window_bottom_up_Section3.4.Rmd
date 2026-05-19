@@ -1,5 +1,5 @@
 ---
-title:  "Fst sliding analysis"
+title:  "Fst sliding window analysis - divergence between West and South Canterbury"
 author: "Natalia Zajac"
 output:
   html_document: 
@@ -32,15 +32,23 @@ library(scales)
 library(ggpubr)
 library(ggrepel)
 library(enrichplot)
+library(GO.db)
+library(enrichR)
+library(clusterProfiler)
+library(GSEABase)
+library(tidyverse)
+working_dir=getwd()
 
-Fst_grendalf = read_delim("../FST/Popoolation2/Sliding_Fst_per_Lake/Fst_sliding.Grendalf.Pi.FET.C2.txt")
+##Load the dataframe of Fst per window (together with nucleotide diversity per window, results from Fisher's exact test and results from BayPass)
+Fst_grendalf = read_delim(paste0(working_dir,"/../FST/Popoolation2/Sliding_Fst_per_Lake/Fst_sliding.Grendalf.Pi.FET.C2.txt"))
 
-df = read_delim("../test.sync") # just for colnames
+df = read_delim(paste0(working_dir,"/../test.sync")) # just for colnames
 poolnames = str_remove(sapply(str_split(colnames(df)[c(-1:-3)], "\\."), .subset, 2), "B-")
 metadata = data.frame(pool = poolnames , lake = sapply(str_split(poolnames, "_"), .subset, 1)) %>% column_to_rownames("pool") %>% mutate(lake = if_else(lake == "Alex", "Alexandrina", lake))
-
 colors = list(lake = setNames(c("orange", "cornflowerblue","gold", "purple", "darkgreen"), unique(metadata$lake)))
-geneAnno = read_delim("../Atriophallophorus_winterbourni/EBI/GCA_013407085.1/Annotation/Genes/genes_annotation_byGene.txt")
+
+## Load gene annotation and merge with the previous dataframe - annotation created with Genome_Assembly_Organization/GCA_013407085.1.R
+geneAnno = read_delim(paste0(working_dir,"/../Atriophallophorus_winterbourni/EBI/GCA_013407085.1/Annotation/Genes/genes_annotation_byGene.txt"))
 
 genes = data.table(geneAnno[,c(6,8,9)])
 colnames(genes) = c("Chr", "start", "end")
@@ -57,9 +65,7 @@ Fst_grendalf$window = paste0(Fst_grendalf$chrom, "-", Fst_grendalf$start, "-", F
 Fst_grendalf$window_length = Fst_grendalf$end - Fst_grendalf$start
 Fst_grendalf = Fst_grendalf[Fst_grendalf$window_length > 0,]
 
-library(GO.db)
-library(enrichR)
-library(clusterProfiler)
+##Create Gene Ontology Annotation df list
 term2gene = NULL
 term2gene[['BP']] = geneAnno[,c(3,12)] %>% filter(!is.na(`GO BP`)) %>%
     separate_rows(`GO BP`, sep = "; ") %>%
@@ -76,10 +82,7 @@ term2name[["BP"]] = data.frame(Term = term2gene$BP$Term, Name = sapply(term2gene
 term2name[["MF"]] = data.frame(Term = term2gene$MF$Term, Name = sapply(term2gene$MF$Term, function(x){Term(x)[[1]]}))
 term2name[["CC"]] = data.frame(Term = term2gene$CC$Term, Name = sapply(term2gene$CC$Term, function(x){Term(x)[[1]]}))
 
-
-library(GSEABase)
-library(tidyverse)
-
+#Annotate Gos with GOSSlims
 myIds <- term2gene$BP$Term
 myCollection <- GOCollection(myIds)
 fl <- "../Atriophallophorus_winterbourni/EBI/GCA_013407085.1/GO_files/goslim.obo" 
@@ -141,10 +144,14 @@ slimdf = merge(slimdf, term2gene$CC, by.x = "go_terms", by.y = "Term")
 slimdf = slimdf[,c(1,2,5,6)]
 slimdfCC = slimdf[!duplicated(slimdf),] %>% mutate(GO = "CC")
 slimdf = rbind(slimdfBP, slimdfMF, slimdfCC)
+
+## OR read the precomputed df in because it takes a while to run the above
 slimdf = read.delim("ogslimdf.txt")
 
+## Load information content per GO
 IC = read.delim("../Atriophallophorus_winterbourni/EBI/GCA_013407085.1/GO_files/Atrio_GO_IC", header = F, sep = " ")
 
+#Add KO annotation
 kegg = read.delim("../Gene2Kegg_Awinterbourni.txt",header = F, sep = "\t")
 kegg = kegg[-1,c(1,2,3)]
 term2gene$Kegg = kegg[kegg$V2 != "",c(2,1)]
@@ -154,8 +161,8 @@ term2name$Kegg = kegg[kegg$V2 != "",c(2,3)]
 colnames(term2name$Kegg) = c("KO", "Name")
 
 
-#Prepare dxy table 
-rc = read.delim("../FST/Popoolation2/combined.filtered.nomasked_rc")
+#Prepare minor allele freq data
+rc = read.delim(paste0(working_dir,"/../FST/Popoolation2/combined.filtered.nomasked_rc"))
 rc = rc %>% 
   mutate(across(starts_with("maa"), ~ as.numeric(sapply(str_split(., "/"), .subset,1))/as.numeric(sapply(str_split(., "/"), .subset,2)))) %>% 
   mutate(across(starts_with("mia"), ~ as.numeric(sapply(str_split(., "/"), .subset,1))/as.numeric(sapply(str_split(., "/"), .subset,2))))
@@ -163,7 +170,6 @@ rc = rc[,c(1:2,26:37,39:41)]
 colnames(rc) = c("chrom", "snp", rownames(metadata)[-13])
 
 #Calculate average allele frequency per each window
-
 windows = Fst_grendalf[,c(1,2,3)]
 windows = unique(windows)
 windows = data.table(windows)
@@ -196,19 +202,8 @@ for (i in unique(Fst_grendalf$label)[c(2:5,7:11,15)]){
   dxy_per_window = rbind(dxy_per_window, df)
 }
 dxy_per_window$window = paste0(dxy_per_window$chrom, "-", dxy_per_window$start, "-", dxy_per_window$end)
-```
 
-
-# {.tabset}
-
-This analysis will be bottom up - finding differentiated windows between different comparisons, then identifying genes associated with these windows and then performing GO enrichment analysis on these genes. Eventually the goal is to identify what these functions could be implicated with mitonuclear discordance. 
-
-## Analysis of outlier SNPs selected with all thresholds {.tabset}
-
-### All comparisons together. 
-
-```{r, fig.height=18, fig.width=16}
-
+## Compute average per window of each two-lake comparison
 for_plots = NULL
 for (i in unique(Fst_grendalf$label)[c(2:5,7:11,15)]){
   tb = Fst_grendalf[Fst_grendalf$label == i,]
@@ -219,11 +214,18 @@ for (i in unique(Fst_grendalf$label)[c(2:5,7:11,15)]){
   tb$color = if_else(tb$window %in% Reduce(intersect, x), "final_outlier", "not_outlier")
   for_plots = rbind(for_plots, tb)
 }
+```
 
-for_plots = for_plots %>% mutate(label2 = case_when(label %in% c("Alexandrina_Paringa", "Alexandrina_Mapourika", "Middleton_Paringa", "Mapourika_Middleton") ~ "West vs East", 
-                                        label %in% c("Alexandrina_Selfe", "Middleton_Selfe") ~ "East vs Selfe", 
-                                        label %in% c("Mapourika_Selfe", "Paringa_Selfe") ~ "West vs Selfe", 
-                                        label == "Alexandrina_Middleton" ~ "East vs East",  label == "Mapourika_Paringa" ~ "West vs West"))
+
+# {.tabset}
+
+This analysis will be bottom up - finding differentiated windows between the West Lakes and South Canterbury Lakes and observing their pattern of divergence in Lake Selfe, then identifying genes associated with these windows and then performing GO enrichment analysis on these genes. Eventually the goal is to identify whether these functions could be implicated with mitonuclear discordance. 
+
+## Analysis of outlier SNPs {.tabset}
+
+### All comparisons together. 
+
+```{r, fig.height=18, fig.width=16}
 
 ggplot(for_plots, aes(window, Fst, color = color)) + geom_point() + scale_color_manual(values = c("red", "black")) + theme(axis.text.x = element_blank()) + labs(x = "Position", y = "Average Fst") + facet_wrap(~label, ncol = 1)
 ```
@@ -231,7 +233,7 @@ ggplot(for_plots, aes(window, Fst, color = color)) + geom_point() + scale_color_
 ### Average Fst vs distance
 
 ```{r, fig.height=5, fig.width=7}
-distance = "../tLCP_1400.txt"
+distance = paste0(working_dir,"/../tLCP_1400.txt")
 distance = read.delim(distance, sep = " ")
 distance = distance[rownames(distance) %in% unique(metadata$lake),colnames(distance) %in% unique(metadata$lake)] %>% rownames_to_column() %>% melt()
 distance = distance[!duplicated(distance),]
@@ -257,12 +259,11 @@ list_of_diff_genes = sapply(split( test[,c(1,3)] , f = test$label), function(x){
 ggVennDiagram(list_of_diff_genes)
 ```
 
-Ok so that cool, what we could do is do a complimentary approach to the window approach but with gene. Do an upset plot for the genes
-
 ### length of windows
 
 ```{r, fig.height=5, fig.width=7}
 windows = for_plots[,c(1,2,3,4,5,18,19,20,21)]
+windows$window_length = windows$end - windows$start
 windows$window_length_bins = ezCut(windows$window_length, breaks = seq(500, 5000, 1000))
 
 windows[windows$color == "final_outlier",] %>% group_by(label, window_length_bins) %>% dplyr::summarise(count = n_distinct(window)) %>% ggplot(aes(count, factor(label, levels = rev(c("Alexandrina_Middleton", "Mapourika_Paringa", "Alexandrina_Paringa", "Alexandrina_Mapourika", "Mapourika_Middleton", "Middleton_Paringa", "Alexandrina_Selfe", "Middleton_Selfe", "Mapourika_Selfe", "Paringa_Selfe"))), fill = window_length_bins)) + geom_col(position = "fill") + labs(x = "Proportion", y = "", fill = "Window Length") + scale_fill_manual(values = brewPalette(n = 15))
@@ -273,7 +274,7 @@ windows[windows$color == "final_outlier",] %>% group_by(label, window_length_bin
 First check how many genomic regions belong to which category
 
 ```{r, fig.height=5, fig.width=7}
-temp = unique(for_plots[,c(4,19,21)]) %>% group_by(window, color) %>% dplyr::summarise(values = paste(label, collapse = ","))
+temp = unique(for_plots[,c(4,19,20)]) %>% group_by(window, color) %>% dplyr::summarise(values = paste(label, collapse = ","))
 name = paste(unique(for_plots$label), collapse = ",")
 x1 = temp[temp$values == name & temp$color == "final_outlier",]
 x2 = temp[temp$values == name & temp$color == "not_outlier",]
@@ -281,15 +282,14 @@ x3 = temp[temp$values != name & temp$color == "not_outlier",]
 x4 = temp[temp$values != name & temp$color == "final_outlier",]
 windows = list("all_non_outliers" = x1$window, "all_outliers" = x2$window, "not_all_outliers" = x4$window, "not_all_not_outliers" = x3$window)
 
-ggVennDiagram(windows)
+ggVennDiagram(windows, label_color = "white")
 ```
 
-
-## Figure 3A + 3B
+## Figure 3A
 
 ```{r, fig.height=5, fig.width=11}
 library(ggpp)
-temp = unique(for_plots[,c(4,19,21)]) %>% group_by(window, color) %>% dplyr::summarise(values = paste(label, collapse = ","))
+temp = unique(for_plots[,c(4,19,20)]) %>% group_by(window, color) %>% dplyr::summarise(values = paste(label, collapse = ","))
 name = paste(unique(for_plots$label), collapse = ",")
 x1 = temp[temp$values == name & temp$color == "final_outlier",] %>% mutate(category1 = "All comparisons differentiated", West_vs_East = "")
 x2 = temp[temp$values == name & temp$color == "not_outlier",] %>% mutate(category1 = "All comparisons undifferentiated", West_vs_East = "")
@@ -330,9 +330,9 @@ x4 = x4 %>%
       .default = ""))
 x4 = x4[,c(-2,-4)]
 
-temp2 = merge(unique(for_plots[,c(4,5,19,21)]), x4, by = c("window"))
-temp3 = merge(unique(for_plots[,c(4,5,19,21)]), x1, by = c("window","color"))
-temp4 = merge(unique(for_plots[,c(4,5,19,21)]), x2, by = c("window","color"))
+temp2 = merge(unique(for_plots[,c(4,5,19,20)]), x4, by = c("window"))
+temp3 = merge(unique(for_plots[,c(4,5,19,20)]), x1, by = c("window","color"))
+temp4 = merge(unique(for_plots[,c(4,5,19,20)]), x2, by = c("window","color"))
 
 temp3 = rbind(temp2,temp3,temp4)
 
@@ -384,10 +384,15 @@ p3 = temp3 %>% filter(category1 == "West vs South Canterbury") %>% mutate(West_v
 
 p = p1 + p2 + p3 
 
-pdf("../Figures/Whole_genome_subdivided.v2.pdf", width = 14, height = 6)
+pdf(paste0(working_dir,"/../Figures/Whole_genome_subdivided.v2.pdf"), width = 14, height = 6)
 p
 dev.off()
 
+```
+
+## Figure 3B
+
+```{r, fig.height=5, fig.width=11}
 
 for_fst = temp3 %>% mutate(
   label2 = case_when(label %in% c("Alexandrina_Paringa", "Alexandrina_Mapourika", "Middleton_Paringa", "Mapourika_Middleton") ~ "West vs South Canterbury", 
@@ -402,7 +407,7 @@ p4 = for_fst %>%
     geom_violin()  + 
     scale_fill_manual(values = c("azure4", "salmon" , "#A6CEE3FF", "darkorange", "plum","darkcyan")) + theme(axis.text.x = element_text(size = 13, angle = 45, hjust = 1, vjust = 1), plot.margin = margin(10, 10, 10, 50),axis.title.y = element_text(size = 18), axis.text.y = element_text(size = 15),legend.text = element_text(size = 11), legend.key.size = unit(1, "cm"), legend.key = element_rect(colour = NA, fill = NA)) + labs(x = "") + guides(fill=guide_legend(ncol=1)) + ylab(expression(F[ST])) + labs(fill = "Genomic regions")
 
-pdf("../Figures/Whole_genome_subdivided_FST.2.pdf", width = 10, height = 5)
+pdf(paste0(working_dir,"/../Figures/Whole_genome_subdivided_FST.2.pdf"), width = 10, height = 5)
 p4
 dev.off()
 
@@ -421,7 +426,7 @@ xxx$east = factor(xxx$east, levels = c("Introgressing from both", "Introgressing
 xxx = xxx[xxx$label %in% c("Alexandrina_Selfe", "Middleton_Selfe", "Paringa_Selfe", "Mapourika_Selfe"),]
 xxx$label = factor(xxx$label, levels = c("Alexandrina_Selfe", "Middleton_Selfe", "Paringa_Selfe", "Mapourika_Selfe"))
 
-pdf("../Figures/Manhattan_WestvsEast.v2.pdf", height = 9, width = 9)
+pdf(paste0(working_dir,"/../Figures/Manhattan_WestvsEast.v2.pdf"), height = 9, width = 9)
 
 ggplot(xxx,aes(window,Fst)) + 
   geom_point(data = xxx[xxx$east == "Rest",], aes(window,Fst), color = "grey") + 
@@ -436,10 +441,9 @@ ggplot(xxx,aes(window,Fst)) +
 dev.off()
 ```
 
-
 ## Figure 3C
 
-```{r, sets_of_snps_of_intest, include=FALSE}
+```{r, include=FALSE}
 
 West_East_outliers = setdiff(setdiff(intersect(intersect(intersect(list_of_outliers$Alexandrina_Paringa, list_of_outliers$Alexandrina_Mapourika), list_of_outliers$Mapourika_Middleton), list_of_outliers$Middleton_Paringa), list_of_outliers$Alexandrina_Middleton), list_of_outliers$Mapourika_Paringa)
 
@@ -477,28 +481,42 @@ p1 = ggplot(temp,aes(color,
     labs(x = "", y = expression(paste("Nucleotide diversity ", pi)), fill = F[ST] ~ "outlier")  +
     stat_compare_means(aes(group = color),
                        comparisons = lev,  # defined above
-                       method = "t.test",        # or "t.test"
-                       label = "p.signif") + scale_fill_manual(values = colors2) + theme(legend.position = "top", axis.text.x = element_blank(),axis.text.y = element_text(size = 12), axis.title.y = element_text(size = 18), strip.text = element_text(size = 18), legend.text = element_text(size = 12)) + facet_grid(~factor(variable2, levels = c("South Canterbury", "Selfe", "West")))
+                       method = "wilcox.test",        # or "t.test"
+                       label = "p.signif", p.adjust.method = "BH") + scale_fill_manual(values = colors2) + theme(legend.position = "top", axis.text.x = element_blank(),axis.text.y = element_text(size = 12), axis.title.y = element_text(size = 18), strip.text = element_text(size = 18), legend.text = element_text(size = 12)) + facet_grid(~factor(variable2, levels = c("South Canterbury", "Selfe", "West")))
 pdf("../Figures/Nucleotide_diversity_WestvsEast.pdf", height = 5, width = 9)
 p1
 dev.off()
 ```
 
-## Supplementary Figure S2
+## Supplementary Figure S3
 
 ```{r, fig.width=13, fig.height=7}
 
 obj = for_plots %>% mutate(category = case_when(window %in% Incoming_to_Selfe_East ~ "Introgressing from SC", window %in% Incoming_to_Selfe_West ~ "Introgressing from West", window %in% BDMI ~ "Introgressing from both", .default = ""))
 
-tmp = merge(obj[obj$category != "",] %>% mutate(in_gene = if_else(gene_name != "", "in gene", "not in gene")), merge(obj %>% filter(category != "") %>% group_by(category, gene_name, chrom) %>% summarise(windows1 = n_distinct(window)) %>% filter(gene_name != ""), obj %>% group_by(gene_name, chrom) %>% summarise(windows2 = n_distinct(window)) %>% filter(gene_name != ""), by = c("gene_name", "chrom")) %>% mutate(ratio = windows1/windows2), by = c("gene_name", "chrom","category"), all = TRUE)
+tmp = merge(
+  obj[obj$category != "",] %>% mutate(in_gene = if_else(gene_name != "", "in gene", "not in gene")), 
+  merge(
+    obj %>% 
+      filter(category != "") %>% 
+      group_by(category, gene_name, chrom) %>% 
+      dplyr::summarise(windows1 = n_distinct(window)) %>% 
+      filter(gene_name != ""), 
+    obj %>% 
+      group_by(gene_name, chrom) %>% 
+      dplyr::summarise(windows2 = n_distinct(window)) %>% 
+      filter(gene_name != ""), 
+    by = c("gene_name", "chrom")) %>% 
+    mutate(ratio = windows1/windows2), by = c("gene_name", "chrom","category"), all = TRUE)
 
+tmp$window_length = tmp$end - tmp$start
 tmp$window_length_bins = ezCut(tmp$window_length, breaks = seq(500, 10000, 1000))
 
 tmp$category = factor(tmp$category, levels = c("Introgressing from SC", "Introgressing from West", "Introgressing from both"))
 
 p1 = tmp %>% group_by(category, in_gene, window_length_bins) %>% dplyr::summarise(count = n_distinct(window)) %>% ggplot(aes(count, str_wrap(category,12), fill = window_length_bins)) + geom_col(position = "stack") + labs(x = "Window count", y = "", fill = "Window Length") + scale_fill_manual(values = brewPalette(n = 15)) + facet_grid(~in_gene) + theme(strip.text = element_text(size = 15), axis.text.y = element_text(size = 12))
 
-p2 = ggplot(unique(tmp[,c(1,2,3,27)]), aes(category,ratio)) + ggbeeswarm::geom_quasirandom() + labs(x = "", y = "Fraction of gene divergence")
+p2 = ggplot(unique(tmp[,c(1,2,3,26)]), aes(category,ratio)) + ggbeeswarm::geom_quasirandom() + labs(x = "", y = "Fraction of gene divergence")
 
 Incoming_to_Selfe_East_genes = setdiff(unique(obj[obj$category == "Introgressing from SC",]$gene_name), "")
 Incoming_to_Selfe_West_genes = setdiff(unique(obj[obj$category == "Introgressing from West",]$gene_name), "")
@@ -514,21 +532,10 @@ p1/p
 dev.off()
 ```
 
-## DXY 
 
+## GO enrichment analysis {.tabset}
 
-```{r, fig.width=10, fig.height=5}
-
-ggplot(dxy_per_window[dxy_per_window$window %in% Incoming_to_Selfe_West,], aes( value,variable)) + geom_boxplot()
-
-```
-
-Observed: low dxy for Incoming_to_Selfe_West
-
-
-## GO enrichment analysis - Figure 3E
-
-```{r, fig.height=8, fig.width=10}
+```{r}
 
 list_of_genes_of_interest$`Introgressing from both` = setdiff(setdiff(list_of_genes_of_interest$`Introgressing from both`, list_of_genes_of_interest$`Introgressing from East`), list_of_genes_of_interest$`Introgressing from West`)
 
@@ -582,6 +589,8 @@ for (i in names(list_of_genes_of_interest)){
 }
 
 ```
+
+### Figure 3E
 
 ```{r, fig.height=10, fig.width=18}
 combined = rbind(BP_enrich, MF_enrich, CC_enrich) 
@@ -651,6 +660,8 @@ p
 dev.off()
 ```
 
+### Additional related plots - emapplots
+
 ```{r, fig.height=8, fig.width=10}
 edo = enricher(list_of_genes_of_interest$`Introgressing from East`, 
                pvalueCutoff = 0.05, 
@@ -702,3 +713,4 @@ pdf("../Figures/emapplot_MF_fromBoth.pdf", height=5, width=7)
 emapplot(edox, cex_label_category = 0.7,  layout = "nicely")
 dev.off()
 ```
+

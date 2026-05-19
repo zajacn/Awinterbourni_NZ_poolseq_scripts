@@ -4,8 +4,8 @@ Genome assembly of Atriophallophorus winterbourni has been downloaded from WormB
 
 Scripts used for the analysis are divided into the following folders:
 
-Genome_Assembly_Organization - contains scripts on how the genomic was prepared for analysis
-Mitochondrial_Genome - contains the assembled mitochondrial genome sequence and annotation and a circos config file for plotting 
+Genome_Assembly_Organization - contains scripts on how the genomic was prepared for analysis    
+Mitochondrial_Genome - contains the assembled mitochondrial genome sequence and annotation and a circos config file for plotting    
 Mapping - contains scripts on how raw data was mapped to the assemblies
 Sync - contains scripts on how variants were called and filtered
 DIYABC and Treemix - contain scripts on how this software was run for admixture/gene flow estimation

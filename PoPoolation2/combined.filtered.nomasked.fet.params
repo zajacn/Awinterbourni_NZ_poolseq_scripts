@@ -1,0 +1,11 @@
+Using input	/cluster/scratch/zajacn/SYNC/combined.filtered.nomasked.sync
+Using output	/cluster/scratch/zajacn/Popoolation2/combined.filtered.nomasked.fet
+Using min-count	6
+Using min-coverage	10
+Using max-coverage	500
+Using window-size	1
+Using step-size	1
+using window summary method	geometricmean
+Using min-covered-fraction	0.1
+Using test	0
+Using help	0

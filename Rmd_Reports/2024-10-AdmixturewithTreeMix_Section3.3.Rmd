@@ -1,5 +1,5 @@
 ---
-  title:  "Treemix visualisations"
+title:  "Treemix visualisations"
 author: "Natalia Zajac"
 output:
   html_document: 
@@ -32,9 +32,10 @@ library(popcorn)
 library(pheatmap)
 library(ComplexHeatmap)
 library(cowplot)
-source("../../lausanne_postdoc/jokela_lab_info/Treemix/Tree_Space_Analysis_Consensus/plotting_funcs.R")
+working_dir=getwd()
+source(paste0(working_dir,"/../../lausanne_postdoc/jokela_lab_info/Treemix/Tree_Space_Analysis_Consensus/plotting_funcs.R"))
 
-poolnames = read.csv("../../lausanne_postdoc/jokela_lab_info/Treemix/Tree_Space_Analysis_Consensus/pops.lst.txt", sep = " ", header = F)
+poolnames = read.csv(paste0(working_dir,"/../../lausanne_postdoc/jokela_lab_info/Treemix/Tree_Space_Analysis_Consensus/pops.lst.txt"), sep = " ", header = F)
 metadata = data.frame(pool = poolnames$V1 , lake = sapply(str_split(poolnames$V1, "_"), .subset, 1)) %>% column_to_rownames("pool") %>% mutate(lake = if_else(lake == "Alex", "Alexandrina", lake))
 
 colors = list(lake = setNames(c("orange", "cornflowerblue","gold", "purple", "darkgreen"), unique(metadata$lake)))
@@ -83,8 +84,8 @@ part3 = all_trees %>% group_by(uniq_combo, V5, V6) %>% dplyr::summarise(V1 = mea
 tree = merge(merge(part3, part1, by = "V5"), part2, by = "V6")
 
 
-#Read in the tree structure
-treemixobj = read_treemix("../../lausanne_postdoc/jokela_lab_info/Treemix/whole_genome_split_out/random_sample_without_replacement_081")
+#Read in the tree structure - one of the trees after confirming they represent the same consensus structure - see treespace analysis
+treemixobj = read_treemix(paste0(working_dir,"/../../lausanne_postdoc/jokela_lab_info/Treemix/whole_genome_split_out/random_sample_without_replacement_081"))
 ```
 
 # {.tabset}
@@ -226,7 +227,7 @@ south_island <- st_crop(
   ymin = -45, ymax = -42.5
 )
 
-pdf("../Figures/TreeMix_as_a_Map.pdf", height = 6, width = 6)
+pdf(paste0(working_dir,"/../Figures/TreeMix_as_a_Map.pdf"), height = 6, width = 6)
 ggplot() +
     # subtle basemap
     geom_sf(data = south_island,

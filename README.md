@@ -1,6 +1,6 @@
 These scripts have been used to analyse Pool-Seq data for the following publication:
 
-Genome assembly of Atriophallophorus winterbourni has been downloaded from WormBase parasite and organized using Genome_Assembly_Organization scripts. Only scaffolds with protein coding genes have been used for the analysis. Contigs with mitochondrial genes and genes within fully softmasked genomic regions were excluded from analysis. 
+Genome assembly of Atriophallophorus winterbourni has been downloaded from WormBase parasite. Only scaffolds with protein coding genes have been used for the analysis. Contigs with mitochondrial genes and genes within fully softmasked genomic regions were excluded from analysis. 
 
 Scripts used for the analysis are divided into the following folders:
 

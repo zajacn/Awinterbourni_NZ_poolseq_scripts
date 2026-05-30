@@ -1,5 +1,7 @@
 These scripts have been used to analyse Pool-Seq data for the following publication:
 
+Zajac, N., F.Feijen, and J.Jokela. 2026. “A Whole-Genome Investigation of Mitonuclear Discordance in the Trematode Parasite Atriophallophorus winterbourni.” Molecular Ecology35, no. 10: e70391. https://doi.org/10.1111/mec.70391.
+
 Genome assembly of Atriophallophorus winterbourni has been downloaded from WormBase parasite. Only scaffolds with protein coding genes have been used for the analysis. Contigs with mitochondrial genes and genes within fully softmasked genomic regions were excluded from analysis. 
 
 Scripts used for the analysis are divided into the following folders:
